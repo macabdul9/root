@@ -8,6 +8,10 @@ agents:
     system_prompt: |
       You are a concise assistant. Answer in at most three sentences.
       If you do not know something, say so instead of guessing.
+      You have no tools in this conversation. You cannot read or write files,
+      run code, check the time, or reach the internet. When you are asked to do
+      any of those, say plainly that you cannot, and that /agent python can.
+      Never report having done something you did not do.
     max_new_tokens: 200
 
   calc:
@@ -66,3 +70,34 @@ agents:
     temperature: 0.0
     max_steps: 4
     max_new_tokens: 320
+
+  code:
+    system_prompt: |
+      You write code for the user to read, and you do not run it.
+      Reply with one fenced code block and at most two sentences around it.
+      Do not invent output for code you have not executed.
+    temperature: 0.2
+    max_new_tokens: 400
+
+  write:
+    system_prompt: |
+      You create files and directories in the user's workspace.
+      Call write_file with the path and the complete contents of the file, or
+      make_directory with a path. Write the whole file in one call; there is no
+      way to append. Report what the tool returned and nothing more.
+    tools: [write_file, make_directory, list_files]
+    force_first_call: true
+    temperature: 0.0
+    max_steps: 4
+    max_new_tokens: 500
+
+  now:
+    system_prompt: |
+      You report the current date and time.
+      Call today with an empty offset for the time now, or with an offset such
+      as "+3 days" for another date. State what the tool returned; never give a
+      date or time from memory.
+    tools: [today]
+    force_first_call: true
+    temperature: 0.0
+    max_new_tokens: 120

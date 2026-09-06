@@ -1,11 +1,19 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from root import terminal
 from root.agent import AgentResult, Step
-from root.config import AgentSpec
+from root.config import AgentSpec, ModelChoice
+from root.formats import GENERIC
 from root.terminal import HISTORY_TURNS, Session, run_command
 from root.tools import build_tools
+
+
+def _record(seen, choice):
+    seen.append(choice)
+    return SimpleNamespace(model_id=choice.id, call_format=GENERIC, unload=lambda: None)
 
 
 @pytest.fixture
@@ -117,7 +125,7 @@ def test_workspace_without_an_argument_just_reports(session, tmp_path):
 
 
 def test_trace_level_is_shown_and_set(session):
-    assert run_command(session, "/trace") == "trace: on"
+    assert run_command(session, "/trace").startswith("trace: on")
     assert run_command(session, "/trace full") == "trace: full"
     assert session.trace == "full"
 
@@ -137,3 +145,82 @@ def test_last_replays_the_previous_turn(session):
     replay = run_command(session, "/last")
     assert "raw: hello" in replay
     assert replay.endswith("hello")
+
+
+def test_model_listing_marks_the_loaded_one(session):
+    session.models = {
+        "lfm2-350m": ModelChoice("lfm2-350m", "LiquidAI/LFM2.5-350M", "the default"),
+        "qwen3-06b": ModelChoice("qwen3-06b", "Qwen/Qwen3-0.6B", "JSON tool calls"),
+    }
+    session.model = SimpleNamespace(model_id="Qwen/Qwen3-0.6B")
+
+    listing = run_command(session, "/model")
+
+    assert "  lfm2-350m" in listing
+    assert "* qwen3-06b" in listing
+
+
+def test_an_unlisted_model_still_shows_as_current(session):
+    session.model = SimpleNamespace(model_id="someone/custom-model")
+    assert "someone/custom-model" in run_command(session, "/model")
+
+
+def test_switching_model_resolves_an_alias_and_clears_history(session, monkeypatch):
+    session.models = {"qwen3-06b": ModelChoice("qwen3-06b", "Qwen/Qwen3-0.6B")}
+    session.model = SimpleNamespace(model_id="LiquidAI/LFM2.5-350M", unload=lambda: None)
+    session.remember("hi", "hello")
+    loaded = SimpleNamespace(model_id="Qwen/Qwen3-0.6B", call_format=GENERIC)
+    monkeypatch.setattr(terminal, "load_model", lambda choice, device: loaded)
+
+    message = run_command(session, "/model qwen3-06b")
+
+    assert session.model is loaded
+    assert "Qwen/Qwen3-0.6B" in message
+    assert session.history == []
+
+
+def test_switching_to_the_loaded_model_does_nothing(session):
+    session.model = SimpleNamespace(model_id="LiquidAI/LFM2.5-350M")
+    assert run_command(session, "/model LiquidAI/LFM2.5-350M").startswith("already on")
+
+
+def test_an_unknown_model_name_is_passed_through_as_an_id(session, monkeypatch):
+    session.model = SimpleNamespace(model_id="a/b", unload=lambda: None)
+    seen = []
+    monkeypatch.setattr(terminal, "load_model", lambda choice, device: _record(seen, choice))
+
+    run_command(session, "/model some/other-model")
+
+    assert seen[0].id == "some/other-model"
+    assert not seen[0].trust_remote_code
+
+
+def test_remote_code_is_only_used_when_the_entry_asks_for_it(session, monkeypatch):
+    session.models = {
+        "safe": ModelChoice("safe", "vendor/safe"),
+        "custom": ModelChoice("custom", "vendor/custom", trust_remote_code=True),
+    }
+    session.model = SimpleNamespace(model_id="a/b", unload=lambda: None)
+    seen = []
+    monkeypatch.setattr(terminal, "load_model", lambda choice, device: _record(seen, choice))
+
+    run_command(session, "/model safe")
+    run_command(session, "/model custom")
+
+    assert [choice.trust_remote_code for choice in seen] == [False, True]
+
+
+def test_bare_agent_lists_instead_of_erroring(session):
+    listing = run_command(session, "/agent")
+    assert "unknown agent" not in listing
+    assert "/agent NAME" in listing
+    assert session.agent == "chat"
+
+
+def test_bare_trace_says_how_to_change_it(session):
+    assert run_command(session, "/trace") == "trace: on · change with /trace off | full"
+
+
+def test_model_listing_says_how_to_load_one(session):
+    session.model = SimpleNamespace(model_id="a/b")
+    assert "/model ALIAS" in run_command(session, "/model")

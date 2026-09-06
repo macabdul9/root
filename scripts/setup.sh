@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VENV="${VENV:-.venv}"
-PYTHON="${PYTHON:-python3}"
-
-if [[ ! -d "$VENV" ]]; then
-  "$PYTHON" -m venv "$VENV"
+# uv owns the environment: it creates .venv, resolves against uv.lock, and keeps
+# the two in step. Nothing here touches the system or conda Python.
+if ! command -v uv >/dev/null 2>&1; then
+  echo "uv not found; installing it into ~/.local/bin" >&2
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
 fi
 
-"$VENV/bin/python" -m pip install --upgrade pip
-"$VENV/bin/python" -m pip install -e ".[dev]"
+uv sync --extra dev
 
-echo "Activate with: source $VENV/bin/activate"
+cat <<'MESSAGE'
+
+Run without activating:   uv run root
+                          uv run pytest
+Or activate as usual:     source .venv/bin/activate
+MESSAGE

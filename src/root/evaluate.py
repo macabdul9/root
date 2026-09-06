@@ -4,13 +4,15 @@ import argparse
 import json
 import logging
 import sys
+import tempfile
+from contextlib import ExitStack
 from dataclasses import asdict
 from pathlib import Path
 
 from .agent import run_agent
 from .backend import LocalModel
-from .config import DEFAULT_MODEL, load_agents
-from .evals import accuracy, load_cases, score_case
+from .config import config_path, load_agents, load_default_model, load_models, resolve_model
+from .evals import SCRATCH, accuracy, load_cases, score_case
 from .tools import build_tools
 
 
@@ -19,9 +21,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog="root-eval",
         description="Score agents on tool choice and answer content.",
     )
-    parser.add_argument("--evals", type=Path, default=Path("configs/evals.yaml"))
-    parser.add_argument("--config", type=Path, default=Path("configs/agents.yaml"))
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--evals", type=Path, help="eval cases; defaults to the packaged set")
+    parser.add_argument("--config", type=Path, help="agent config; defaults to the packaged one")
+    parser.add_argument("--model", default=load_default_model())
     parser.add_argument("--workspace", type=Path, default=Path("."))
     parser.add_argument("--device")
     parser.add_argument("--agent", help="only run cases for this agent")
@@ -39,8 +41,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 
-    agents = load_agents(args.config)
-    cases = load_cases(args.evals)
+    agents = load_agents(config_path("agents.yaml", args.config))
+    evals = config_path("evals.yaml", args.evals)
+    cases = load_cases(evals)
     if args.agent:
         cases = [case for case in cases if case.agent == args.agent]
     unknown = {case.agent for case in cases} - set(agents)
@@ -51,22 +54,36 @@ def main(argv: list[str] | None = None) -> int:
         print("No cases to run", file=sys.stderr)
         return 1
 
-    model = LocalModel.load(args.model, device=args.device)
+    choice = resolve_model(args.model, load_models())
+    model = LocalModel.load(
+        choice.id, device=args.device, trust_remote_code=choice.trust_remote_code
+    )
     # A case may point at a fixture directory so its answer does not shift when
     # the repository it would otherwise search changes.
-    workspaces = {case.workspace for case in cases}
-    tools = {name: build_tools(Path(name or args.workspace)) for name in workspaces}
+    # A case workspace is relative to the eval file, so a packaged fixture is
+    # found wherever the command runs from. `tmp` means a fresh empty directory,
+    # which is what a case that writes files needs.
+    fixed = {
+        name: build_tools(evals.parent / name if name else args.workspace)
+        for name in {case.workspace for case in cases}
+        if name != SCRATCH
+    }
 
     scores = []
-    for case in cases:
-        result = run_agent(model, agents[case.agent], case.prompt, tools[case.workspace])
-        score = score_case(case, result)
-        scores.append(score)
-        mark = "PASS" if score.passed else "FAIL"
-        print(f"{mark} [{case.agent}] {case.prompt[:64]}")
-        print(f"     called={score.tools_called} answer={' '.join(score.answer.split())[:90]}")
-        for reason in score.failures():
-            print(f"     -> {reason}")
+    with ExitStack() as scratch_dirs:
+        for case in cases:
+            if case.workspace == SCRATCH:
+                tools = build_tools(Path(scratch_dirs.enter_context(tempfile.TemporaryDirectory())))
+            else:
+                tools = fixed[case.workspace]
+            result = run_agent(model, agents[case.agent], case.prompt, tools)
+            score = score_case(case, result)
+            scores.append(score)
+            mark = "PASS" if score.passed else "FAIL"
+            print(f"{mark} [{case.agent}] {case.prompt[:64]}")
+            print(f"     called={score.tools_called} answer={' '.join(score.answer.split())[:90]}")
+            for reason in score.failures():
+                print(f"     -> {reason}")
 
     rates = accuracy(scores)
     passed = sum(s.passed for s in scores)
@@ -78,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.output_dir:
         args.output_dir.mkdir(parents=True, exist_ok=True)
         payload = {
-            "model": args.model,
+            "model": model.model_id,
             "device": model.device,
             "accuracy": rates,
             "cases": [

@@ -10,6 +10,7 @@ run() {
   echo
 }
 
+run auto "[2,3,41,0,19,-10] sort this number"
 run chat "Why is a 350M parameter model faster than a 7B one?"
 run calc "A box holds 24 pens. I buy 7 boxes and give away 13 pens. How many are left?"
 run python "What is the sum of the squares of the numbers 1 through 20?"

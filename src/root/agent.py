@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import ast
 import logging
-import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from .config import AgentSpec
+from .formats import GENERIC, CallFormat, strip_thinking
+from .route import is_conversational
 from .tools import Tool
 
 if TYPE_CHECKING:
@@ -16,22 +16,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The markers the LFM2 chat template trains the model to emit around a call.
-TOOL_CALL_START = "<|tool_call_start|>["
-TOOL_CALL_END = "<|tool_call_end|>"
-
 TOOL_NUDGE = (
     "Call a tool when it helps. Never write the tool result yourself: stop after "
     "the call and wait for it. Once you have the result, answer in plain text."
 )
-
-_MARKED_CALL = re.compile(
-    r"<\|tool_call_start\|>\s*\[?(.+?)\]?\s*(?:<\|tool_call_end\|>|$)", re.DOTALL
-)
-# Models that lose the markers still tend to emit a bare call on its own line.
-_BARE_CALL = re.compile(r"^\s*([a-zA-Z_]\w*\(.*\))\s*$", re.MULTILINE)
-_LOOSE_CALL = re.compile(r"([a-zA-Z_]\w*)\((.*)\)", re.DOTALL)
-_KEYWORD_PREFIX = re.compile(r"^[a-zA-Z_]\w*\s*=\s*")
 
 
 @dataclass(slots=True)
@@ -77,72 +65,34 @@ class AgentResult:
         return sum(step.generated_tokens for step in self.steps)
 
 
-def _first_string_argument(call: ast.Call) -> str:
-    for node in [kw.value for kw in call.keywords] + list(call.args):
-        if isinstance(node, ast.Constant):
-            return str(node.value)
-    return ""
+def render_arguments(arguments: list[tuple[str | None, str]], tool: Tool | None = None) -> str:
+    """Arguments as they should appear in a trace.
 
-
-def _parse_call_source(source: str) -> tuple[str, str] | None:
-    try:
-        node = ast.parse(source.strip(), mode="eval").body
-    except SyntaxError:
-        return None
-    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
-        return None
-    return node.func.id, _first_string_argument(node)
-
-
-def _parse_call_loosely(source: str) -> tuple[str, str] | None:
-    """Recover a call whose argument is not valid Python.
-
-    A tool that carries code hits this constantly: the model writes
-    `run_python(code="print(len("x"))")` and the nested quotes make the whole
-    call unparseable, even though what it meant is unambiguous.
+    A one-parameter tool shows just its quoted value, which is what nearly every
+    call is; anything wider is named, so `write_file(path=..., content=...)`
+    stays readable. Quoting happens here so callers print the result as-is.
     """
-    match = _LOOSE_CALL.fullmatch(source.strip())
-    if match is None:
-        return None
-    argument = _KEYWORD_PREFIX.sub("", match.group(2).strip())
-    if len(argument) >= 2 and argument[0] == argument[-1] and argument[0] in "\"'":
-        argument = argument[1:-1]
-    argument = argument.replace("\\n", "\n").replace("\\'", "'").replace('\\"', '"')
-    return match.group(1), argument
+    single = (tool is not None and len(tool.parameters) == 1) or (
+        len(arguments) == 1 and arguments[0][0] is None
+    )
+    if single:
+        return repr(next((value for _, value in arguments), ""))
+    return ", ".join(
+        repr(value) if name is None else f"{name}={value!r}" for name, value in arguments
+    )
 
 
-def parse_tool_call(text: str, tool_names: set[str]) -> tuple[str, str] | None:
-    """Pull a single tool call out of a generation.
-
-    Prefers the tool-call markers the chat template trains the model to emit and
-    falls back to a bare `name(arg)` line, which is what small models produce
-    once they drop the markers.
-    """
-    marked = _MARKED_CALL.search(text)
-    if marked:
-        parsed = _parse_call_source(marked.group(1))
-        if parsed:
-            return parsed
-        loose = _parse_call_loosely(marked.group(1))
-        if loose and loose[0] in tool_names:
-            return loose
-    for match in _BARE_CALL.finditer(text):
-        parsed = _parse_call_source(match.group(1)) or _parse_call_loosely(match.group(1))
-        if parsed and parsed[0] in tool_names:
-            return parsed
-    return None
-
-
-def _strip_after_call(text: str) -> str:
+def _strip_after_call(text: str, call_format: CallFormat) -> str:
     """Cut anything generated past the tool call.
 
     Small models like to invent the tool's output and keep talking; only the
     call itself should go back into the conversation.
     """
-    end = text.find(TOOL_CALL_END)
-    if end == -1:
-        return text.strip()
-    return text[: end + len(TOOL_CALL_END)].strip()
+    for marker in call_format.stop:
+        end = text.find(marker)
+        if end != -1:
+            return text[: end + len(marker)].strip()
+    return text.strip()
 
 
 def run_agent(
@@ -159,6 +109,7 @@ def run_agent(
     each step finishes so a caller can trace the loop while it runs instead of
     waiting for the whole thing.
     """
+    call_format = getattr(model, "call_format", GENERIC)
     available = {name: tools[name] for name in spec.tools} if tools else {}
     system = spec.system_prompt.strip()
     if available:
@@ -176,14 +127,16 @@ def run_agent(
         # A 350M model often answers from memory instead of reaching for a tool;
         # opening its turn with the call marker removes that option on step 0.
         # Forcing the same on a retry is worse: it spends every remaining step
-        # on variants of the code that just failed.
-        prefill = TOOL_CALL_START if available and spec.force_first_call and index == 0 else None
+        # on variants of the code that just failed. A question about the
+        # assistant itself is not a task, so nothing is forced there either.
+        force = available and spec.force_first_call and index == 0 and not is_conversational(prompt)
+        prefill = call_format.prefill if force and call_format.forceable else None
         generation = model.generate(
             messages,
             tools=schemas,
             max_new_tokens=spec.max_new_tokens,
             temperature=spec.temperature,
-            stop=[TOOL_CALL_END] if available else None,
+            stop=list(call_format.stop) if available else None,
             prefill=prefill,
         )
         step = Step(
@@ -196,29 +149,33 @@ def run_agent(
         )
         text = generation.text
 
-        call = parse_tool_call(text, set(available)) if available else None
+        call = call_format.parse(text, set(available)) if available else None
         if call is None:
-            result.answer = text.strip()
+            result.answer = strip_thinking(text)
             result.steps.append(step)
             if on_step:
                 on_step(step)
             return result
 
-        name, argument = call
-        messages.append({"role": "assistant", "content": _strip_after_call(text)})
+        name, arguments = call
+        messages.append({"role": "assistant", "content": _strip_after_call(text, call_format)})
         started = time.monotonic()
+        shown = render_arguments(arguments)
         if name not in available:
             observation = f"error: no tool named {name!r}; available: {sorted(available)}"
         else:
             try:
-                observation = available[name].run(argument)
+                tool = available[name]
+                bound = tool.bind(arguments)
+                shown = render_arguments([(key, value) for key, value in bound.items()], tool)
+                observation = tool.run(**bound)
             except Exception as exc:
                 # The model is the retry mechanism here: it reads the error and tries again.
                 observation = f"error: {exc}"
         step.tool_seconds = time.monotonic() - started
-        step.call = ToolCall(name=name, argument=argument, result=observation)
+        step.call = ToolCall(name=name, argument=shown, result=observation)
         # The trace is the user-facing view of this; keep the log for debugging.
-        logger.debug("step=%d tool=%s argument=%r", index, name, argument)
+        logger.debug("step=%d tool=%s arguments=%r", index, name, shown)
         result.steps.append(step)
         if on_step:
             on_step(step)
@@ -236,7 +193,7 @@ def run_agent(
         max_new_tokens=spec.max_new_tokens,
         temperature=spec.temperature,
     )
-    result.answer = final.text.strip()
+    result.answer = strip_thinking(final.text)
     last = Step(
         index=spec.max_steps,
         generation=final.text,

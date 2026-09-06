@@ -1,29 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MODEL="${MODEL:-LiquidAI/LFM2.5-350M}"
-CONFIG="${CONFIG:-configs/agents.yaml}"
+MODEL="${MODEL:-lfm2-350m}"
 WORKSPACE="${WORKSPACE:-.}"
-PYTHON="${PYTHON:-python}"
+read -r -a run_with <<< "${RUN:-uv run}"
 
 agent="${1:?usage: scripts/run_agent.sh AGENT [PROMPT...]}"
 shift
 
-if [[ ! -f "$CONFIG" ]]; then
-  echo "Config not found: $CONFIG" >&2
-  exit 1
-fi
-
-# One directory per run holds the config, the environment and the transcript.
+# One directory per run holds the resolved environment and the transcript.
 run_dir="runs/$(date +%Y%m%d-%H%M%S)-$agent"
 mkdir -p "$run_dir"
-cp "$CONFIG" "$run_dir/agents.yaml"
-"$PYTHON" -m pip freeze > "$run_dir/requirements.txt"
+uv export --no-hashes > "$run_dir/requirements.txt"
 
-"$PYTHON" -m root.run \
+"${run_with[@]}" python -m root.run \
   --agent "$agent" \
   --model "$MODEL" \
-  --config "$CONFIG" \
   --workspace "$WORKSPACE" \
   --output-dir "$run_dir" \
   "$@" \

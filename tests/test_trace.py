@@ -1,5 +1,5 @@
 from root.agent import AgentResult, Step, ToolCall
-from root.trace import render_step, render_summary, render_turn
+from root.trace import format_answer, render_step, render_summary, render_turn
 
 
 def tool_step(result="395", seconds=0.4, forced=False):
@@ -9,7 +9,7 @@ def tool_step(result="395", seconds=0.4, forced=False):
         seconds=seconds,
         prompt_tokens=120,
         generated_tokens=18,
-        call=ToolCall("calculator", "17 * 23 + 4", result),
+        call=ToolCall("calculator", "'17 * 23 + 4'", result),
         tool_seconds=0.02,
         forced=forced,
     )
@@ -82,3 +82,28 @@ def test_color_wraps_the_meta_line_only():
     lines = render_step(tool_step(), "on", color=True)
     assert "\033[2m" in lines[2]
     assert "\033[2m" not in lines[0]
+
+
+def test_a_fenced_block_is_indented_and_the_fences_removed():
+    answer = "Here:\n```python\ndef f():\n    return 1\n```\ndone"
+    assert format_answer(answer).splitlines() == [
+        "Here:",
+        "    python",
+        "    def f():",
+        "        return 1",
+        "done",
+    ]
+
+
+def test_inline_markup_is_stripped_without_colour():
+    assert format_answer("It **doubles** the `x`") == "It doubles the x"
+
+
+def test_inline_markup_becomes_escape_codes_with_colour():
+    rendered = format_answer("It **doubles** the `x`", color=True)
+    assert "\033[1m" in rendered
+    assert "**" not in rendered
+
+
+def test_plain_prose_is_unchanged():
+    assert format_answer("The answer is 42.") == "The answer is 42."

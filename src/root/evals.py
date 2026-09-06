@@ -8,6 +8,7 @@ import yaml
 from .agent import AgentResult
 
 NO_TOOL = "none"
+SCRATCH = "tmp"
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +19,7 @@ class EvalCase:
     expect_tool: str | None = None
     expect_argument_contains: str | None = None
     expect_answer_contains: tuple[str, ...] = ()
+    expect_answer_excludes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.prompt.strip():
@@ -50,11 +52,22 @@ class CaseScore:
         if not self.argument_ok:
             reasons.append(f"argument missing {self.case.expect_argument_contains!r}")
         if not self.answer_ok:
-            missing = [
-                s for s in self.case.expect_answer_contains if s.lower() not in self.answer.lower()
-            ]
-            reasons.append(f"answer missing {missing}")
+            answer = self.answer.lower()
+            missing = [s for s in self.case.expect_answer_contains if s.lower() not in answer]
+            present = [s for s in self.case.expect_answer_excludes if s.lower() in answer]
+            if missing:
+                reasons.append(f"answer missing {missing}")
+            if present:
+                reasons.append(f"answer should not contain {present}")
         return reasons
+
+
+def _as_tuple(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        return (value,)
+    return tuple(str(item) for item in value)
 
 
 def load_cases(path: Path) -> list[EvalCase]:
@@ -64,9 +77,8 @@ def load_cases(path: Path) -> list[EvalCase]:
         raise ValueError(f"no cases defined in {path}")
     cases = []
     for entry in raw_cases:
-        expected = entry.get("expect_answer_contains") or ()
-        if isinstance(expected, str):
-            expected = (expected,)
+        expected = _as_tuple(entry.get("expect_answer_contains"))
+        excluded = _as_tuple(entry.get("expect_answer_excludes"))
         cases.append(
             EvalCase(
                 agent=entry["agent"],
@@ -74,7 +86,8 @@ def load_cases(path: Path) -> list[EvalCase]:
                 workspace=entry.get("workspace"),
                 expect_tool=entry.get("expect_tool"),
                 expect_argument_contains=entry.get("expect_argument_contains"),
-                expect_answer_contains=tuple(str(s) for s in expected),
+                expect_answer_contains=expected,
+                expect_answer_excludes=excluded,
             )
         )
     return cases
@@ -104,7 +117,9 @@ def score_case(case: EvalCase, result: AgentResult) -> CaseScore:
         )
 
     answer = result.answer.lower()
-    answer_ok = all(s.lower() in answer for s in case.expect_answer_contains)
+    answer_ok = all(s.lower() in answer for s in case.expect_answer_contains) and not any(
+        s.lower() in answer for s in case.expect_answer_excludes
+    )
 
     return CaseScore(
         case=case,

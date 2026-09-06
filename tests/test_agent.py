@@ -1,15 +1,16 @@
-from pathlib import Path
-
 import pytest
 
-from root.agent import AgentResult, parse_tool_call, run_agent
+from root.agent import AgentResult, run_agent
 from root.backend import Generation
-from root.config import AgentSpec, load_agents
+from root.config import AgentSpec, config_path, load_agents
+from root.formats import LFM2
 from root.tools import build_tools
 
 
 class ScriptedModel:
     """Replays canned generations so the loop can be tested without weights."""
+
+    call_format = LFM2
 
     def __init__(self, outputs):
         self.outputs = list(outputs)
@@ -20,35 +21,6 @@ class ScriptedModel:
         return Generation(
             text=self.outputs.pop(0), prompt_tokens=10, generated_tokens=5, seconds=0.1
         )
-
-
-def test_parse_tool_call_reads_the_marked_format():
-    text = "<|tool_call_start|>[calculator(expression='6 * 7')]<|tool_call_end|>"
-    assert parse_tool_call(text, {"calculator"}) == ("calculator", "6 * 7")
-
-
-def test_parse_tool_call_accepts_a_bare_call_line():
-    assert parse_tool_call("calculator('2 + 2')", {"calculator"}) == ("calculator", "2 + 2")
-
-
-def test_parse_tool_call_ignores_a_call_to_an_unknown_name():
-    assert parse_tool_call("print('hello')", {"calculator"}) is None
-
-
-def test_parse_tool_call_ignores_plain_prose():
-    assert parse_tool_call("The answer is 42.", {"calculator"}) is None
-
-
-def test_parse_tool_call_recovers_a_call_with_nested_quotes():
-    text = '<|tool_call_start|>[run_python(code="print(len("abc"))")]<|tool_call_end|>'
-    assert parse_tool_call(text, {"run_python"}) == ("run_python", 'print(len("abc"))')
-
-
-def test_parse_tool_call_unescapes_newlines_in_a_recovered_call():
-    text = r'<|tool_call_start|>[run_python(code="x = 1\nprint(\'x\')")]'
-    name, code = parse_tool_call(text, {"run_python"})
-    assert name == "run_python"
-    assert code.splitlines() == ["x = 1", "print('x')"]
 
 
 def test_agent_feeds_tool_result_back_and_answers(tmp_path):
@@ -111,7 +83,7 @@ def test_config_rejects_unknown_keys(tmp_path):
 
 
 def test_shipped_config_loads():
-    agents = load_agents(Path("configs/agents.yaml"))
+    agents = load_agents(config_path("agents.yaml"))
     assert "chat" in agents
     assert agents["calc"].tools == ("calculator",)
 

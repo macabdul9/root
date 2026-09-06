@@ -1,0 +1,472 @@
+# One hundred cases across every agent.
+#
+# expect_tool: a tool the agent must call, or `none` to assert it answered
+#   without one. Omit to leave tool choice unchecked.
+# workspace: a directory beside this file, or `tmp` for a fresh empty one,
+#   which is what a case that writes files needs.
+cases:
+
+  # --- calc: arithmetic the calculator can do exactly -----------------------
+  - agent: calc
+    prompt: A box holds 24 pens. I buy 7 boxes and give away 13 pens. How many are left?
+    expect_tool: calculator
+    expect_answer_contains: ["155"]
+  - agent: calc
+    prompt: What is 17 times 23, plus 4?
+    expect_tool: calculator
+    expect_answer_contains: ["395"]
+  - agent: calc
+    prompt: What is 144 divided by 12?
+    expect_tool: calculator
+    expect_answer_contains: ["12"]
+  - agent: calc
+    prompt: What is 2 to the power of 10?
+    expect_tool: calculator
+    expect_answer_contains: ["1024"]
+  - agent: calc
+    prompt: What is 1000 minus 379?
+    expect_tool: calculator
+    expect_answer_contains: ["621"]
+  - agent: calc
+    prompt: What is 45 plus 55 plus 100?
+    expect_tool: calculator
+    expect_answer_contains: ["200"]
+  - agent: calc
+    prompt: What is the remainder when 100 is divided by 7?
+    expect_tool: calculator
+    expect_answer_contains: ["2"]
+  - agent: calc
+    prompt: A train travels 60 miles per hour for 3 hours. How far does it go?
+    expect_tool: calculator
+    expect_answer_contains: ["180"]
+  - agent: calc
+    prompt: What is 15 percent of 240, as a number?
+    expect_tool: calculator
+    expect_answer_contains: ["36"]
+  - agent: calc
+    prompt: I have 3 crates of 18 bottles and break 5. How many bottles remain?
+    expect_tool: calculator
+    expect_answer_contains: ["49"]
+  - agent: calc
+    prompt: What is 7 times 8 times 9?
+    expect_tool: calculator
+    expect_answer_contains: ["504"]
+  - agent: calc
+    prompt: What is 2500 divided by 4, minus 125?
+    expect_tool: calculator
+    expect_answer_contains: ["500"]
+  - agent: calc
+    prompt: What is 99 squared?
+    expect_tool: calculator
+    expect_answer_contains: ["9801"]
+  - agent: calc
+    prompt: Add 1234 and 8766.
+    expect_tool: calculator
+    expect_answer_contains: ["10000"]
+  - agent: calc
+    prompt: What is 63 divided by 9, times 11?
+    expect_tool: calculator
+    expect_answer_contains: ["77"]
+
+  # --- python: things a short program answers better ------------------------
+  - agent: python
+    prompt: What is the sum of the squares of the numbers 1 through 20?
+    expect_tool: run_python
+    expect_answer_contains: ["2870"]
+  - agent: python
+    prompt: How many characters are in the string "small agents run locally"?
+    expect_tool: run_python
+    expect_answer_contains: ["24"]
+  - agent: python
+    prompt: "Sort these numbers and show the result: [2, 3, 41, 0, 19, -10]"
+    expect_tool: run_python
+    expect_answer_contains: ["-10", "41"]
+  - agent: python
+    prompt: How many days are there between 2026-01-01 and 2026-09-06?
+    expect_tool: run_python
+    expect_answer_contains: ["248"]
+  - agent: python
+    prompt: Reverse the string "terminal".
+    expect_tool: run_python
+    expect_answer_contains: ["lanimret"]
+  - agent: python
+    prompt: What is the sum of the numbers 1 through 100?
+    expect_tool: run_python
+    expect_answer_contains: ["5050"]
+  - agent: python
+    prompt: How many vowels are in the word "onomatopoeia"?
+    expect_tool: run_python
+    expect_answer_contains: ["8"]
+  - agent: python
+    prompt: What is the 20th Fibonacci number, counting 1 and 1 as the first two?
+    expect_tool: run_python
+    expect_answer_contains: ["6765"]
+  - agent: python
+    prompt: "What are the unique values in this list: [4, 4, 9, 1, 9, 4]?"
+    expect_tool: run_python
+    expect_answer_contains: ["1", "4", "9"]
+  - agent: python
+    prompt: What is the average of 4, 9, 20 and 27?
+    expect_tool: run_python
+    expect_answer_contains: ["15"]
+  - agent: python
+    prompt: Convert the string "2026-03-14" into the day of the week.
+    expect_tool: run_python
+    expect_answer_contains: ["Saturday"]
+  - agent: python
+    prompt: How many prime numbers are there below 50?
+    expect_tool: run_python
+    expect_answer_contains: ["15"]
+  - agent: python
+    prompt: Uppercase the string "root is smol".
+    expect_tool: run_python
+    expect_answer_contains: ["ROOT IS SMOL"]
+  - agent: python
+    prompt: What is the factorial of 10?
+    expect_tool: run_python
+    expect_answer_contains: ["3628800"]
+  - agent: python
+    prompt: "What is the largest number in this list: [17, 3, 289, 42]?"
+    expect_tool: run_python
+    expect_answer_contains: ["289"]
+  - agent: python
+    prompt: Count the words in the sentence "the quick brown fox jumps over the lazy dog".
+    expect_tool: run_python
+    expect_answer_contains: ["9"]
+  - agent: python
+    prompt: What is 2 to the power of 32?
+    expect_tool: run_python
+    expect_answer_contains: ["4294967296"]
+  - agent: python
+    prompt: "Join these words with a comma: apple, pear, plum. Show the resulting string."
+    expect_tool: run_python
+    expect_answer_contains: ["apple,pear,plum"]
+  - agent: python
+    prompt: How many times does the letter "s" appear in "mississippi sisters"?
+    expect_tool: run_python
+    expect_answer_contains: ["7"]
+  - agent: python
+    prompt: What is the median of 3, 7, 9, 15 and 21?
+    expect_tool: run_python
+    expect_answer_contains: ["9"]
+
+  # --- files: reading and listing a fixed workspace -------------------------
+  - agent: files
+    workspace: workspace
+    prompt: What Python version does project.toml require?
+    expect_tool: read_file
+    expect_argument_contains: project.toml
+    expect_answer_contains: ["3.10"]
+  - agent: files
+    workspace: workspace
+    prompt: Which files are in the scripts directory?
+    expect_tool: list_files
+    expect_answer_contains: ["run_pipeline.sh"]
+  - agent: files
+    workspace: workspace
+    prompt: What is the batch size in settings.json?
+    expect_tool: read_file
+    expect_argument_contains: settings.json
+    expect_answer_contains: ["8"]
+  - agent: files
+    workspace: workspace
+    prompt: What does notes.md say the nightly job writes?
+    expect_tool: read_file
+    expect_argument_contains: notes.md
+    expect_answer_contains: ["scores.csv"]
+  - agent: files
+    workspace: workspace
+    prompt: What version is in the CHANGELOG.md heading at the top?
+    expect_tool: read_file
+    expect_argument_contains: CHANGELOG.md
+    expect_answer_contains: ["0.2.0"]
+  - agent: files
+    workspace: workspace
+    prompt: What is the project name in project.toml?
+    expect_tool: read_file
+    expect_argument_contains: project.toml
+    expect_answer_contains: ["ranking"]
+  - agent: files
+    workspace: workspace
+    prompt: Read src/model.py and tell me the default temperature.
+    expect_tool: read_file
+    expect_argument_contains: model.py
+    expect_answer_contains: ["0.7"]
+  - agent: files
+    workspace: workspace
+    prompt: What time does README.md say the nightly job runs?
+    expect_tool: read_file
+    expect_argument_contains: README.md
+    expect_answer_contains: ["02:00"]
+  - agent: files
+    workspace: workspace
+    prompt: List the Python files in the src directory.
+    expect_tool: list_files
+    expect_answer_contains: ["model.py"]
+  - agent: files
+    workspace: workspace
+    prompt: What dependency does project.toml declare?
+    expect_tool: read_file
+    expect_argument_contains: project.toml
+    expect_answer_contains: ["numpy"]
+  - agent: files
+    workspace: workspace
+    prompt: How many regions appear in data/records.csv?
+    expect_tool: read_file
+    expect_argument_contains: records.csv
+    expect_answer_contains: ["3"]
+  - agent: files
+    workspace: workspace
+    prompt: What is the highest score in data/records.csv?
+    expect_tool: read_file
+    expect_argument_contains: records.csv
+    expect_answer_contains: ["91"]
+  - agent: files
+    workspace: workspace
+    prompt: What model name is in data/config.json?
+    expect_tool: read_file
+    expect_argument_contains: config.json
+    expect_answer_contains: ["ranker-v3"]
+  - agent: files
+    workspace: workspace
+    prompt: Which markdown files are in this workspace?
+    expect_tool: list_files
+    expect_answer_contains: ["notes.md"]
+  - agent: files
+    workspace: workspace
+    prompt: Does a file called deploy.sh exist here?
+    expect_answer_contains: ["no"]
+
+  # --- search: finding where something lives --------------------------------
+  - agent: search
+    workspace: workspace
+    prompt: Which file defines the normalize_scores function?
+    expect_tool: grep
+    expect_argument_contains: normalize_scores
+    expect_answer_contains: ["pipeline.py"]
+  - agent: search
+    workspace: workspace
+    prompt: Which file defines the softmax function?
+    expect_tool: grep
+    expect_argument_contains: softmax
+    expect_answer_contains: ["model.py"]
+  - agent: search
+    workspace: workspace
+    prompt: Where is MAX_CANDIDATES set?
+    expect_tool: grep
+    expect_argument_contains: MAX_CANDIDATES
+    expect_answer_contains: ["model.py"]
+  - agent: search
+    workspace: workspace
+    prompt: Which file mentions scores.csv?
+    expect_tool: grep
+    expect_argument_contains: scores.csv
+  - agent: search
+    workspace: workspace
+    prompt: Search for temperature_scale and say which file it is in.
+    expect_tool: grep
+    expect_argument_contains: temperature_scale
+    expect_answer_contains: ["model.py"]
+  - agent: search
+    workspace: workspace
+    prompt: Which file imports normalize_scores?
+    expect_tool: grep
+    expect_argument_contains: normalize_scores
+    expect_answer_contains: ["test_pipeline.py"]
+  - agent: search
+    workspace: workspace
+    prompt: Where does the code raise a ValueError?
+    expect_tool: grep
+    expect_answer_contains: ["model.py"]
+  - agent: search
+    workspace: workspace
+    prompt: Which file defines test_normalize_sums_to_one?
+    expect_tool: grep
+    expect_argument_contains: test_normalize_sums_to_one
+    expect_answer_contains: ["test_pipeline.py"]
+  - agent: search
+    workspace: workspace
+    prompt: grep for DEFAULT_TEMPERATURE
+    expect_tool: grep
+    expect_argument_contains: DEFAULT_TEMPERATURE
+  - agent: search
+    workspace: workspace
+    prompt: Which file sets __version__?
+    expect_tool: grep
+    expect_answer_contains: ["__init__.py"]
+
+  # --- write: creating files in a scratch directory -------------------------
+  - agent: write
+    workspace: tmp
+    prompt: Create a file called hello.txt containing the word hello.
+    expect_tool: write_file
+    expect_argument_contains: hello.txt
+  - agent: write
+    workspace: tmp
+    prompt: Make a directory called notes.
+    expect_tool: make_directory
+    expect_argument_contains: notes
+  - agent: write
+    workspace: tmp
+    prompt: Write a file called version.txt containing 0.3.0
+    expect_tool: write_file
+    expect_argument_contains: version.txt
+  - agent: write
+    workspace: tmp
+    prompt: Create a directory called src/models.
+    expect_tool: make_directory
+    expect_argument_contains: models
+  - agent: write
+    workspace: tmp
+    prompt: Save a file named todo.md with a single line reading "ship it".
+    expect_tool: write_file
+    expect_argument_contains: todo.md
+  - agent: write
+    workspace: tmp
+    prompt: Create config.json holding an empty JSON object.
+    expect_tool: write_file
+    expect_argument_contains: config.json
+  - agent: write
+    workspace: tmp
+    prompt: Write the numbers one to three, one per line, into numbers.txt
+    expect_tool: write_file
+    expect_argument_contains: numbers.txt
+  - agent: write
+    workspace: tmp
+    prompt: Make a folder called output.
+    expect_tool: make_directory
+    expect_argument_contains: output
+
+  # --- now: the clock -------------------------------------------------------
+  - agent: now
+    prompt: What time is it?
+    expect_tool: today
+    expect_answer_contains: ["2026"]
+  - agent: now
+    prompt: What is today's date?
+    expect_tool: today
+    expect_answer_contains: ["2026"]
+  - agent: now
+    prompt: What will the date be in 3 days?
+    expect_tool: today
+    expect_argument_contains: "3"
+  - agent: now
+    prompt: What was the date 2 weeks ago?
+    expect_tool: today
+    expect_argument_contains: "2"
+  - agent: now
+    prompt: What day of the week is it today?
+    expect_tool: today
+    expect_answer_contains: ["day"]
+  - agent: now
+    prompt: Tell me the current date and time.
+    expect_tool: today
+    expect_answer_contains: ["2026"]
+  - agent: now
+    prompt: What is the date 30 days from now?
+    expect_tool: today
+    expect_argument_contains: "30"
+
+  # --- extract: text to a fixed JSON object ---------------------------------
+  - agent: extract
+    prompt: Invoice from Dana Ruiz, dated 2026-03-14, for 412.50 USD of GPU rental.
+    expect_tool: none
+    expect_answer_contains: ["Dana Ruiz", "2026-03-14", "412.50"]
+  - agent: extract
+    prompt: "Receipt: 2026-02-02, 18.40 EUR, taxi, paid by Lee Ann Fischer"
+    expect_tool: none
+    expect_answer_contains: ["2026-02-02", "18.40"]
+  - agent: extract
+    prompt: Order confirmation 2026-06-01 for 89.99 GBP from Kite Ltd, item is a kite.
+    expect_tool: none
+    expect_answer_contains: ["2026-06-01", "89.99"]
+  - agent: extract
+    prompt: Invoice from Acme Corp, 2026-04-01, 1200.00 USD, cloud storage.
+    expect_tool: none
+    expect_answer_contains: ["Acme Corp", "1200.00"]
+  - agent: extract
+    prompt: Statement dated 2025-12-31 showing 74.25 CAD spent on stationery by Ravi Patel.
+    expect_tool: none
+    expect_answer_contains: ["2025-12-31", "74.25"]
+  - agent: extract
+    prompt: Charge of 9.99 USD on 2026-01-15 from Nimbus Hosting for a monthly plan.
+    expect_tool: none
+    expect_answer_contains: ["9.99", "2026-01-15"]
+  - agent: extract
+    prompt: Refund issued 2026-05-20, 55.00 AUD, to Priya Nair, for a cancelled booking.
+    expect_tool: none
+    expect_answer_contains: ["55.00", "Priya Nair"]
+  - agent: extract
+    prompt: A note with no fields at all.
+    expect_tool: none
+    expect_answer_contains: ["null"]
+
+  # --- code: writing code without running it --------------------------------
+  - agent: code
+    prompt: Write python code for binary search.
+    expect_tool: none
+    expect_answer_contains: ["def"]
+  - agent: code
+    prompt: Show me a Python function that reverses a list.
+    expect_tool: none
+    expect_answer_contains: ["def"]
+  - agent: code
+    prompt: Write a Python function that checks whether a string is a palindrome.
+    expect_tool: none
+    expect_answer_contains: ["def"]
+  - agent: code
+    prompt: Give me a Python snippet that reads a JSON file.
+    expect_tool: none
+    expect_answer_contains: ["json"]
+  - agent: code
+    prompt: Write a Python class representing a point with x and y.
+    expect_tool: none
+    expect_answer_contains: ["class"]
+  - agent: code
+    prompt: Implement a function that returns the nth triangular number.
+    expect_tool: none
+    expect_answer_contains: ["def"]
+  - agent: code
+    prompt: Write a Python function that counts word frequencies in a string.
+    expect_tool: none
+    expect_answer_contains: ["def"]
+
+  # --- chat: general questions, and honesty about having no tools -----------
+  - agent: chat
+    prompt: In one sentence, what is a KV cache?
+    expect_tool: none
+    expect_answer_contains: ["cache"]
+  - agent: chat
+    prompt: Why is a 350M parameter model faster than a 7B one?
+    expect_tool: none
+    expect_answer_contains: ["parameter"]
+  - agent: chat
+    prompt: What does bfloat16 trade away compared with float32?
+    expect_tool: none
+    expect_answer_contains: ["precision"]
+  - agent: chat
+    prompt: In one sentence, what is quantization?
+    expect_tool: none
+  - agent: chat
+    prompt: Who wrote the Iliad?
+    expect_tool: none
+    expect_answer_contains: ["Homer"]
+  - agent: chat
+    prompt: What is the capital of Peru?
+    expect_tool: none
+    expect_answer_contains: ["Lima"]
+  - agent: chat
+    prompt: Name one advantage of running a model locally.
+    expect_tool: none
+  - agent: chat
+    prompt: Create a file called report.txt for me.
+    expect_tool: none
+    expect_answer_excludes: ["has been created", "successfully created", "i have created"]
+  - agent: chat
+    prompt: What is the current time?
+    expect_tool: none
+    expect_answer_excludes: ["the current time is"]
+  - agent: chat
+    prompt: Read pyproject.toml and tell me what is in it.
+    expect_tool: none
+    expect_answer_excludes: ["[project]", "[build-system]"]

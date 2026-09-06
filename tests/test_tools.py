@@ -1,8 +1,9 @@
+import inspect
 from datetime import datetime
 
 import pytest
 
-from root.tools import build_tools, calculate, ensure_print, today
+from root.tools import balance_parentheses, build_tools, calculate, ensure_print, today
 
 
 def test_calculate_rejects_non_arithmetic():
@@ -86,3 +87,112 @@ def test_run_python_marks_a_crashed_program_as_an_error(tmp_path):
     output = build_tools(tmp_path)["run_python"].run("print(undefined_name)")
     assert output.startswith("error:")
     assert "NameError" in output
+
+
+def test_balance_parentheses_drops_a_trailing_extra():
+    assert balance_parentheses("sorted([2, 3, 41]))") == "sorted([2, 3, 41])"
+
+
+def test_balance_parentheses_leaves_valid_code_alone():
+    assert balance_parentheses("print(len('abc'))") == "print(len('abc'))"
+
+
+def test_balance_parentheses_gives_up_on_other_syntax_errors():
+    broken = "for i in range(3)"
+    assert balance_parentheses(broken) == broken
+
+
+def test_run_python_recovers_from_an_extra_closing_paren(tmp_path):
+    assert build_tools(tmp_path)["run_python"].run("sorted([2,3,41,0,19,-10]))") == (
+        "[-10, 0, 2, 3, 19, 41]"
+    )
+
+
+def test_list_files_treats_a_directory_name_as_its_contents(tmp_path):
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "run.sh").write_text("")
+    (tmp_path / "top.txt").write_text("")
+
+    listing = build_tools(tmp_path)["list_files"].run("scripts")
+
+    assert listing == "scripts/run.sh"
+
+
+def test_list_files_accepts_a_dot_for_the_workspace_root(tmp_path):
+    (tmp_path / "top.txt").write_text("")
+    assert build_tools(tmp_path)["list_files"].run(".") == "top.txt"
+
+
+def test_list_files_rejects_a_pattern_leaving_the_workspace(tmp_path):
+    with pytest.raises(ValueError, match="outside the workspace"):
+        build_tools(tmp_path)["list_files"].run("../*")
+
+
+def test_list_files_reports_an_unusable_pattern(tmp_path):
+    """Path.glob raises NotImplementedError here, which would otherwise reach
+    the model as a traceback instead of a usable message."""
+    with pytest.raises(ValueError, match="not a usable glob"):
+        build_tools(tmp_path)["list_files"].run("///")
+
+
+def test_list_files_handles_a_redundant_dot_path(tmp_path):
+    (tmp_path / "top.txt").write_text("")
+    assert build_tools(tmp_path)["list_files"].run("./.") == "top.txt"
+
+
+def test_write_file_creates_parents_and_reports(tmp_path):
+    tools = build_tools(tmp_path)
+    message = tools["write_file"].run(path="notes/todo.md", content="- ship it\n")
+
+    assert (tmp_path / "notes" / "todo.md").read_text() == "- ship it\n"
+    assert message.startswith("wrote notes/todo.md")
+
+
+def test_write_file_says_when_it_overwrites(tmp_path):
+    tools = build_tools(tmp_path)
+    tools["write_file"].run(path="a.txt", content="one")
+    assert tools["write_file"].run(path="a.txt", content="two").startswith("overwrote")
+    assert (tmp_path / "a.txt").read_text() == "two"
+
+
+def test_write_file_cannot_escape_the_workspace(tmp_path):
+    with pytest.raises(ValueError, match="outside the workspace"):
+        build_tools(tmp_path)["write_file"].run(path="../escaped.txt", content="x")
+
+
+def test_write_file_refuses_a_directory(tmp_path):
+    (tmp_path / "somewhere").mkdir()
+    with pytest.raises(IsADirectoryError):
+        build_tools(tmp_path)["write_file"].run(path="somewhere", content="x")
+
+
+def test_make_directory_is_repeatable(tmp_path):
+    tools = build_tools(tmp_path)
+    assert tools["make_directory"].run("src/models").endswith("created")
+    assert tools["make_directory"].run("src/models").endswith("already exists")
+    assert (tmp_path / "src" / "models").is_dir()
+
+
+def test_binding_matches_named_arguments(tmp_path):
+    tool = build_tools(tmp_path)["write_file"]
+    assert tool.bind([("content", "hi"), ("path", "a.txt")]) == {"path": "a.txt", "content": "hi"}
+
+
+def test_binding_fills_unnamed_arguments_in_order(tmp_path):
+    tool = build_tools(tmp_path)["write_file"]
+    assert tool.bind([(None, "a.txt"), (None, "hi")]) == {"path": "a.txt", "content": "hi"}
+
+
+def test_binding_reports_a_missing_argument(tmp_path):
+    tool = build_tools(tmp_path)["write_file"]
+    with pytest.raises(ValueError, match="content"):
+        tool.bind([("path", "a.txt")])
+
+
+def test_every_tool_accepts_the_parameters_it_declares(tmp_path):
+    """The schema names the model sees are the names the function is called
+    with, so a mismatch reaches the model as a TypeError on every call."""
+    for tool in build_tools(tmp_path).values():
+        accepted = set(inspect.signature(tool.run).parameters)
+        declared = {parameter.name for parameter in tool.parameters}
+        assert declared == accepted, tool.name

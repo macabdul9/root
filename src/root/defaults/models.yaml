@@ -1,0 +1,25 @@
+# Models the /model command offers. Any Hugging Face id works with --model or
+# /model, whether or not it is listed here; these are the ones that have been
+# run against the eval set.
+default: lfm2-350m
+
+models:
+  lfm2-350m:
+    id: LiquidAI/LFM2.5-350M
+    note: 350M, the default
+  lfm2-230m:
+    id: LiquidAI/LFM2.5-230M
+    note: 230M, the smallest
+  qwen3-06b:
+    id: Qwen/Qwen3-0.6B
+    note: 600M, JSON tool calls
+  qwen35-08b:
+    id: Qwen/Qwen3.5-0.8B
+    note: 800M, XML tool calls
+  k2-horizon-09b:
+    id: IFM/K2-Horizon-0.9B
+    note: 900M, runs code from its own repo
+    # This model ships a custom architecture, so loading it executes Python from
+    # the repository. Read https://hf.co/IFM/K2-Horizon-0.9B before using it,
+    # or delete this entry.
+    trust_remote_code: true

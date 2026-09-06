@@ -1,0 +1,1 @@
+{"model": {"name": "ranker-v3", "quantized": false}, "batch_size": 16, "workers": 4, "paths": {"scores": "data/scores.csv"}}

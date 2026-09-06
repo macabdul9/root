@@ -26,18 +26,28 @@ _OFFSET = re.compile(r"^([+-]?\d+)\s*(second|minute|hour|day|week)s?$", re.IGNOR
 
 
 @dataclass(frozen=True, slots=True)
-class Tool:
-    """A tool the model calls with exactly one string argument.
+class Parameter:
+    name: str
+    description: str
 
-    One argument keeps both the JSON schema and the parsing of the model's call
-    small enough that a sub-billion-parameter model gets it right.
+
+@dataclass(frozen=True, slots=True)
+class Tool:
+    """A tool the model calls with string arguments.
+
+    Nearly every tool takes one, which is what a sub-billion-parameter model
+    gets right most reliably. Writing a file needs two, so the shape allows it
+    without encouraging it.
     """
 
     name: str
     description: str
-    parameter: str
-    parameter_description: str
-    run: Callable[[str], str]
+    parameters: tuple[Parameter, ...]
+    run: Callable[..., str]
+
+    @property
+    def parameter(self) -> str:
+        return self.parameters[0].name
 
     def schema(self) -> dict:
         return {
@@ -48,15 +58,33 @@ class Tool:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        self.parameter: {
+                        parameter.name: {
                             "type": "string",
-                            "description": self.parameter_description,
+                            "description": parameter.description,
                         }
+                        for parameter in self.parameters
                     },
-                    "required": [self.parameter],
+                    "required": [parameter.name for parameter in self.parameters],
                 },
             },
         }
+
+    def bind(self, arguments: list[tuple[str | None, str]]) -> dict[str, str]:
+        """Match parsed arguments to parameters.
+
+        Named arguments go where they are named; unnamed ones fill what is left,
+        in order. A model that writes `write_file('a.txt', 'hi')` and one that
+        writes `write_file(content='hi', path='a.txt')` both land correctly.
+        """
+        known = {parameter.name for parameter in self.parameters}
+        bound = {name: value for name, value in arguments if name in known}
+        unfilled = [p.name for p in self.parameters if p.name not in bound]
+        spare = [value for name, value in arguments if name not in known]
+        bound.update(zip(unfilled, spare, strict=False))
+        missing = known - set(bound)
+        if missing:
+            raise ValueError(f"{self.name} needs {sorted(missing)}")
+        return bound
 
 
 _BINARY_OPS = {
@@ -113,6 +141,31 @@ def today(offset: str) -> str:
     return moment.strftime("%Y-%m-%d %H:%M:%S (%A)")
 
 
+def balance_parentheses(code: str) -> str:
+    """Drop trailing ")" that the model added past the end of its own call.
+
+    `sorted([2, 3, 41]))` is a slip it makes repeatedly and cannot recover from:
+    told about the SyntaxError it emits the same program again. Only applied
+    when dropping them turns unparseable code into parseable code.
+    """
+    if _parses(code):
+        return code
+    trimmed = code.rstrip()
+    while trimmed.endswith(")"):
+        trimmed = trimmed[:-1].rstrip()
+        if _parses(trimmed):
+            return trimmed
+    return code
+
+
+def _parses(code: str) -> bool:
+    try:
+        ast.parse(code)
+    except SyntaxError:
+        return False
+    return True
+
+
 def ensure_print(code: str) -> str:
     """Wrap a bare expression in print().
 
@@ -152,20 +205,52 @@ def _resolve_inside(workspace: Path, raw: str) -> Path:
 def build_tools(workspace: Path) -> dict[str, Tool]:
     workspace = workspace.resolve()
 
-    def read_file(argument: str) -> str:
-        path = _resolve_inside(workspace, argument)
-        if not path.is_file():
-            raise FileNotFoundError(f"no such file: {path.relative_to(workspace)}")
-        text = path.read_text(encoding="utf-8", errors="replace")
+    def read_file(path: str) -> str:
+        resolved = _resolve_inside(workspace, path)
+        if not resolved.is_file():
+            raise FileNotFoundError(f"no such file: {path.strip()}")
+        text = resolved.read_text(encoding="utf-8", errors="replace")
         if len(text) > MAX_TOOL_OUTPUT_CHARS:
             return text[:MAX_TOOL_OUTPUT_CHARS] + "\n[truncated]"
         return text
 
-    def list_files(argument: str) -> str:
-        pattern = argument.strip() or "*"
-        matches = sorted(
-            str(p.relative_to(workspace)) for p in workspace.glob(pattern) if p.is_file()
-        )
+    def write_file(path: str, content: str) -> str:
+        """Write a file, creating parent directories as needed.
+
+        Overwrites without asking. The workspace check is the only guard, so
+        point the session at a directory you are willing to have rewritten.
+        """
+        target = _resolve_inside(workspace, path)
+        if target.is_dir():
+            raise IsADirectoryError(f"{path.strip()} is a directory")
+        existed = target.is_file()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        verb = "overwrote" if existed else "wrote"
+        return f"{verb} {target.relative_to(workspace)}, {len(content)} characters"
+
+    def make_directory(path: str) -> str:
+        target = _resolve_inside(workspace, path)
+        if target.is_file():
+            raise NotADirectoryError(f"{path.strip()} is a file")
+        existed = target.is_dir()
+        target.mkdir(parents=True, exist_ok=True)
+        state = "already exists" if existed else "created"
+        return f"{target.relative_to(workspace)} {state}"
+
+    def list_files(pattern: str) -> str:
+        pattern = pattern.strip().strip("'\"") or "*"
+        if ".." in Path(pattern).parts:
+            raise ValueError(f"pattern is outside the workspace: {pattern}")
+        # Models pass a directory name far more often than a glob that matches
+        # one, and `Path.glob(".")` raises rather than listing anything.
+        if pattern in {".", "./"} or (workspace / pattern).is_dir():
+            pattern = "*" if pattern in {".", "./"} else f"{pattern.rstrip('/')}/*"
+        try:
+            found = list(workspace.glob(pattern))
+        except (IndexError, ValueError, NotImplementedError):
+            raise ValueError(f"not a usable glob pattern: {pattern}") from None
+        matches = sorted(str(p.relative_to(workspace)) for p in found if p.is_file())
         if not matches:
             return f"no files match {pattern}"
         listed = matches[:MAX_LISTED_FILES]
@@ -173,8 +258,8 @@ def build_tools(workspace: Path) -> dict[str, Tool]:
             listed.append(f"[{len(matches) - len(listed)} more]")
         return "\n".join(listed)
 
-    def grep(argument: str) -> str:
-        pattern = argument.strip()
+    def grep(pattern: str) -> str:
+        pattern = pattern.strip()
         if not pattern:
             raise ValueError("empty search pattern")
         try:
@@ -202,22 +287,22 @@ def build_tools(workspace: Path) -> dict[str, Tool]:
                             return "\n".join(matches) + "\n[more matches not shown]"
         return "\n".join(matches) if matches else f"no matches for {pattern}"
 
-    def file_info(argument: str) -> str:
-        path = _resolve_inside(workspace, argument)
-        if not path.is_file():
-            raise FileNotFoundError(f"no such file: {argument.strip()}")
-        stat = path.stat()
-        lines = path.read_text(encoding="utf-8", errors="replace").count("\n") + 1
+    def file_info(path: str) -> str:
+        resolved = _resolve_inside(workspace, path)
+        if not resolved.is_file():
+            raise FileNotFoundError(f"no such file: {path.strip()}")
+        stat = resolved.stat()
+        lines = resolved.read_text(encoding="utf-8", errors="replace").count("\n") + 1
         modified = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
         return (
-            f"{path.relative_to(workspace)}: {lines} lines, "
+            f"{resolved.relative_to(workspace)}: {lines} lines, "
             f"{stat.st_size} bytes, modified {modified}"
         )
 
-    def json_get(argument: str) -> str:
-        if ":" not in argument:
+    def json_get(query: str) -> str:
+        if ":" not in query:
             raise ValueError("expected 'file.json:dotted.path', for example config.json:model.name")
-        raw_path, dotted = argument.split(":", 1)
+        raw_path, dotted = query.split(":", 1)
         path = _resolve_inside(workspace, raw_path)
         if not path.is_file():
             raise FileNotFoundError(f"no such file: {raw_path.strip()}")
@@ -232,7 +317,7 @@ def build_tools(workspace: Path) -> dict[str, Tool]:
         PYTHON_TIMEOUT_SECONDS, but this is not a security sandbox: the code runs
         as the current user with the workspace as its working directory.
         """
-        code = ensure_print(code.strip())
+        code = ensure_print(balance_parentheses(code.strip()))
         if not code:
             raise ValueError("empty program")
         try:
@@ -259,57 +344,115 @@ def build_tools(workspace: Path) -> dict[str, Tool]:
         "calculator": Tool(
             name="calculator",
             description="Evaluate one arithmetic expression and return the number.",
-            parameter="expression",
-            parameter_description="Arithmetic over numbers, such as 24 * 7 - 13.",
+            parameters=(
+                Parameter(
+                    "expression",
+                    "Arithmetic over numbers, such as 24 * 7 - 13.",
+                ),
+            ),
             run=calculate,
+        ),
+        "run_python": Tool(
+            name="run_python",
+            description="Run a short Python program and return whatever it prints.",
+            parameters=(
+                Parameter(
+                    "code",
+                    "A complete program that prints its result, like print(2**16).",
+                ),
+            ),
+            run=run_python,
         ),
         "read_file": Tool(
             name="read_file",
             description="Read a text file from the workspace and return its contents.",
-            parameter="path",
-            parameter_description="Path relative to the workspace, such as src/app.py.",
+            parameters=(
+                Parameter(
+                    "path",
+                    "Path relative to the workspace, such as README.md or src/app.py.",
+                ),
+            ),
             run=read_file,
+        ),
+        "write_file": Tool(
+            name="write_file",
+            description="Create or overwrite a text file in the workspace.",
+            parameters=(
+                Parameter(
+                    "path",
+                    "Path relative to the workspace, such as notes/todo.md.",
+                ),
+                Parameter(
+                    "content",
+                    "The complete text to write. It replaces the file.",
+                ),
+            ),
+            run=write_file,
+        ),
+        "make_directory": Tool(
+            name="make_directory",
+            description="Create a directory in the workspace, including parents.",
+            parameters=(
+                Parameter(
+                    "path",
+                    "Path relative to the workspace, such as src/models.",
+                ),
+            ),
+            run=make_directory,
         ),
         "list_files": Tool(
             name="list_files",
             description="List workspace files matching a glob pattern.",
-            parameter="pattern",
-            parameter_description="Glob pattern such as *.py or src/**/*.md.",
+            parameters=(
+                Parameter(
+                    "pattern",
+                    "Glob pattern such as *.py or src/**/*.md.",
+                ),
+            ),
             run=list_files,
         ),
         "grep": Tool(
             name="grep",
             description="Search every workspace file for a pattern and return matching lines.",
-            parameter="pattern",
-            parameter_description="Text or regular expression, such as force_first_call.",
+            parameters=(
+                Parameter(
+                    "pattern",
+                    "Text or regular expression, such as force_first_call.",
+                ),
+            ),
             run=grep,
         ),
         "file_info": Tool(
             name="file_info",
             description="Report the line count, byte size and modification time of a file.",
-            parameter="path",
-            parameter_description="Path relative to the workspace, such as README.md.",
+            parameters=(
+                Parameter(
+                    "path",
+                    "Path relative to the workspace, such as README.md.",
+                ),
+            ),
             run=file_info,
         ),
         "json_get": Tool(
             name="json_get",
             description="Read one value out of a JSON file by its dotted path.",
-            parameter="query",
-            parameter_description="File and path joined by a colon, like run.json:calls.0.name.",
+            parameters=(
+                Parameter(
+                    "query",
+                    "File and path joined by a colon, like run.json:calls.0.name.",
+                ),
+            ),
             run=json_get,
         ),
         "today": Tool(
             name="today",
             description="Return the current date and time, optionally offset.",
-            parameter="offset",
-            parameter_description="Empty for now, or an offset such as '+3 days' or '-2 weeks'.",
+            parameters=(
+                Parameter(
+                    "offset",
+                    "Empty for now, or an offset such as '+3 days' or '-2 weeks'.",
+                ),
+            ),
             run=today,
-        ),
-        "run_python": Tool(
-            name="run_python",
-            description="Run a short Python program and return whatever it prints.",
-            parameter="code",
-            parameter_description="A complete program that prints its result, like print(2**16).",
-            run=run_python,
         ),
     }

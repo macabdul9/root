@@ -2,3 +2,5 @@ __pycache__/
 *.egg-info/
 .venv/
 runs/
+features.txt
+issues.txt

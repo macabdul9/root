@@ -1,6 +1,8 @@
-from root.route import AUTO, choose_agent
+import pytest
 
-AGENTS = {"chat", "calc", "python", "files", "search", "extract"}
+from root.route import AUTO, choose_agent, is_conversational
+
+AGENTS = {"chat", "calc", "python", "files", "search", "extract", "code", "write", "now"}
 
 # Prompts the rules were written against.
 TUNED = [
@@ -91,3 +93,65 @@ def test_the_default_falls_back_when_it_is_not_configured():
 
 def test_auto_is_not_a_routable_target():
     assert choose_agent("what is 2+2", AGENTS).agent != AUTO
+
+
+CONVERSATIONAL = [
+    "what can you do?",
+    "who are you?",
+    "what are you",
+    "how do you work?",
+    "what tools do you have?",
+    "hi",
+    "thanks",
+    "sure",
+    "yes",
+]
+
+TASKS = [
+    "sort [3, 1, 2]",
+    "can you sort this list [3, 1, 2]",
+    "What Python version does pyproject.toml require?",
+    "What is 17 times 23?",
+    "yesterday's date",
+]
+
+
+@pytest.mark.parametrize("prompt", CONVERSATIONAL)
+def test_a_question_about_the_assistant_is_conversational(prompt):
+    assert is_conversational(prompt)
+
+
+@pytest.mark.parametrize("prompt", TASKS)
+def test_a_task_is_not_conversational(prompt):
+    assert not is_conversational(prompt)
+
+
+def test_writing_code_is_not_running_code():
+    assert choose_agent("write python code for binary search", AGENTS).agent == "code"
+    assert choose_agent("implement a function to reverse a list", AGENTS).agent == "code"
+
+
+def test_running_something_still_goes_to_python():
+    assert choose_agent("What is the sum of squares of 1 through 20?", AGENTS).agent != "code"
+    assert choose_agent("[3, 1, 2] sort this", AGENTS).agent == "python"
+
+
+def test_creating_a_file_goes_to_the_agent_that_can():
+    for prompt in ("create a file called notes.txt", "can you create files?", "write a file"):
+        assert choose_agent(prompt, AGENTS).agent == "write", prompt
+
+
+def test_asking_the_time_reaches_the_clock():
+    for prompt in ("what time it is?", "what time is it", "what is today's date?"):
+        assert choose_agent(prompt, AGENTS).agent == "now", prompt
+
+
+def test_date_arithmetic_is_not_the_clock():
+    assert (
+        choose_agent("How many days between 2026-01-01 and 2026-09-06?", AGENTS).agent == "python"
+    )
+    assert choose_agent("What day of the week was 1999-12-31?", AGENTS).agent == "python"
+
+
+def test_reading_a_file_still_goes_to_files():
+    assert choose_agent("What Python version does pyproject.toml require?", AGENTS).agent == "files"
