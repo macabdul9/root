@@ -1,0 +1,68 @@
+defaults:
+  max_steps: 4
+  max_new_tokens: 256
+  temperature: 0.3
+
+agents:
+  chat:
+    system_prompt: |
+      You are a concise assistant. Answer in at most three sentences.
+      If you do not know something, say so instead of guessing.
+    max_new_tokens: 200
+
+  calc:
+    system_prompt: |
+      You solve arithmetic word problems. Work out the single expression that
+      answers the question, compute it with the calculator tool, then state the
+      answer as one sentence.
+    tools: [calculator]
+    force_first_call: true
+    temperature: 0.0
+    max_steps: 5
+
+  files:
+    system_prompt: |
+      You answer questions about files in the user's workspace.
+      You cannot see any file contents. Call read_file with a path to read a
+      file, and list_files with a glob pattern to find one. When the user names
+      a path, read that path. Answer only from text a tool returned, and say so
+      when the file does not contain the answer.
+    tools: [read_file, list_files]
+    force_first_call: true
+    temperature: 0.0
+    max_steps: 6
+    max_new_tokens: 320
+
+  extract:
+    system_prompt: |
+      You extract structured data from text. Reply with one JSON object and no
+      other text. Use null for any field the text does not mention.
+      Fields: name, date, amount, topic.
+    temperature: 0.0
+    max_new_tokens: 160
+
+  search:
+    system_prompt: |
+      You answer questions about a code workspace.
+      You cannot see any code. Call grep with a word or regular expression to
+      find where something is defined or used, and read_file with a path when
+      you need the surrounding lines. Answer only from what a tool returned,
+      and quote the file and line number you got it from.
+    tools: [grep, read_file]
+    force_first_call: true
+    temperature: 0.0
+    max_steps: 6
+    max_new_tokens: 320
+
+  python:
+    system_prompt: |
+      You answer questions by writing a short Python program.
+      Call run_python with a complete program that prints the answer, such as
+      print(sum(i * i for i in range(1, 11))). Use the standard library only.
+      When the output comes back, state that value as the answer. Never replace
+      the printed value with a number of your own.
+    tools: [run_python]
+    force_first_call: true
+    temperature: 0.0
+    max_steps: 4
+    max_new_tokens: 320
