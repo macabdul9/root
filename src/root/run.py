@@ -10,15 +10,20 @@ from pathlib import Path
 from .agent import run_agent
 from .backend import LocalModel
 from .config import DEFAULT_MODEL, load_agents
+from .route import AUTO, Route, choose_agent
 from .terminal import Session, start_terminal
 from .tools import build_tools
-from .trace import LEVELS, render_step, render_summary
+from .trace import LEVELS, render_route, render_step, render_summary
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="root", description=__doc__)
     parser.add_argument("prompt", nargs="*", help="prompt text; read from stdin when omitted")
-    parser.add_argument("--agent", default="chat", help="agent name from the config")
+    parser.add_argument(
+        "--agent",
+        default="auto",
+        help="agent name from the config, or 'auto' to route by the prompt",
+    )
     parser.add_argument("--model", default=DEFAULT_MODEL, help="Hugging Face model id or path")
     parser.add_argument("--config", type=Path, default=Path("configs/agents.yaml"))
     parser.add_argument("--workspace", type=Path, default=Path("."))
@@ -46,21 +51,19 @@ def main(argv: list[str] | None = None) -> int:
     agents = load_agents(args.config)
 
     if args.list:
+        print(f"{AUTO:12s} routes to one of the agents below, by the prompt")
         for name, spec in agents.items():
             print(f"{name:12s} tools={list(spec.tools) or '-'} max_steps={spec.max_steps}")
         return 0
 
-    if args.agent not in agents:
-        print(f"Unknown agent {args.agent!r}; have {sorted(agents)}", file=sys.stderr)
+    if args.agent != AUTO and args.agent not in agents:
+        print(f"Unknown agent {args.agent!r}; have {[AUTO, *sorted(agents)]}", file=sys.stderr)
         return 1
-    spec = agents[args.agent]
-    if args.max_steps:
-        spec = replace(spec, max_steps=args.max_steps)
 
     tools = build_tools(args.workspace)
-    unknown = set(spec.tools) - set(tools)
+    unknown = {name for spec in agents.values() for name in spec.tools} - set(tools)
     if unknown:
-        print(f"Agent {spec.name} requests unknown tools: {sorted(unknown)}", file=sys.stderr)
+        print(f"Agents request unknown tools: {sorted(unknown)}", file=sys.stderr)
         return 1
 
     prompt = " ".join(args.prompt).strip()
@@ -74,12 +77,19 @@ def main(argv: list[str] | None = None) -> int:
     if not prompt:
         session = Session(
             agents=agents,
-            agent=spec.name,
+            agent=args.agent,
             tools=tools,
             workspace=args.workspace.resolve(),
             trace=args.trace,
         )
         return start_terminal(model, session)
+
+    route = choose_agent(prompt, set(agents)) if args.agent == AUTO else Route(args.agent, None)
+    spec = agents[route.agent]
+    if args.max_steps:
+        spec = replace(spec, max_steps=args.max_steps)
+    if args.agent == AUTO and args.trace != "off":
+        print(render_route(spec.name, route.rule), file=sys.stderr)
 
     def show(step):
         for line in render_step(step, args.trace):

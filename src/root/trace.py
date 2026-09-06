@@ -50,6 +50,11 @@ def render_step(step: Step, level: str = "on", color: bool = False) -> list[str]
     return lines
 
 
+def render_route(agent: str, rule: str | None, color: bool = False) -> str:
+    why = rule or "no rule matched"
+    return _dim(f"  ● route → {agent} ({why})", color)
+
+
 def render_summary(result: AgentResult, tool_count: int, color: bool = False) -> str:
     calls = len(result.calls)
     parts = [

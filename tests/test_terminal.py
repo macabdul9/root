@@ -36,7 +36,37 @@ def test_quit_stops_the_loop(session):
 
 def test_agents_marks_the_current_one(session):
     listing = run_command(session, "/agents")
-    assert listing.splitlines()[0].startswith("* chat")
+    assert "* chat" in listing
+    assert listing.splitlines()[0].startswith("  auto")
+
+
+def test_auto_is_an_accepted_agent(session):
+    assert run_command(session, "/agent auto") == "agent: auto"
+    assert session.agent == "auto"
+
+
+def test_auto_resolves_the_agent_from_the_prompt(session):
+    run_command(session, "/agent auto")
+    spec, rule = session.resolve("What is 17 times 23?")
+    assert spec.name == "calc"
+    assert rule == "arithmetic"
+
+
+def test_a_named_agent_is_used_verbatim(session):
+    spec, rule = session.resolve("What is 17 times 23?")
+    assert spec.name == "chat"
+    assert rule is None
+
+
+def test_tools_explains_auto(session):
+    run_command(session, "/agent auto")
+    assert "picks an agent per prompt" in run_command(session, "/tools")
+
+
+def test_routes_lists_the_rules(session):
+    listing = run_command(session, "/routes")
+    assert "arithmetic" in listing
+    assert "calc" in listing
 
 
 def test_tools_reports_a_toolless_agent(session):
