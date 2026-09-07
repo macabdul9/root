@@ -3,13 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from dataclasses import asdict, replace
 from pathlib import Path
 
 from . import __version__
 from .agent import run_agent
-from .backend import LocalModel
 from .config import (
     config_path,
     copy_defaults,
@@ -18,10 +18,25 @@ from .config import (
     load_models,
     resolve_model,
 )
+from .engines import AUTO as AUTO_ENGINE
+from .engines import ENGINES, EngineUnavailable, load_engine
+from .progress import working
 from .route import AUTO, Route, choose_agent
 from .terminal import Session, start_terminal
 from .tools import build_tools
-from .trace import LEVELS, render_route, render_step, render_summary
+from .trace import LEVELS, StreamGate, render_route, render_step, render_summary
+
+DECODING_FLAGS = frozenset(
+    {
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "repetition_penalty",
+        "max_new_tokens",
+        "seed",
+    }
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -44,9 +59,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--workspace", type=Path, default=Path("."))
     parser.add_argument("--device", help="cuda, mps or cpu; auto-detected when omitted")
+    parser.add_argument(
+        "--engine",
+        choices=ENGINES,
+        default=AUTO_ENGINE,
+        help="what generates the tokens; auto picks the fastest one already serving",
+    )
+    parser.add_argument("--engine-url", help="base URL of the vllm, sglang or ollama server")
+    parser.add_argument(
+        "--no-grammar",
+        action="store_true",
+        help="do not constrain forced tool calls; faster, and the parser repairs instead",
+    )
     parser.add_argument("--max-steps", type=int, help="override the agent's step budget")
+    parser.add_argument("--temperature", type=float, help="0 for greedy decoding")
+    parser.add_argument("--top-p", type=float, help="nucleus sampling mass")
+    parser.add_argument("--top-k", type=int, help="0 disables top-k")
+    parser.add_argument("--min-p", type=float, help="0 disables min-p")
+    parser.add_argument("--repetition-penalty", type=float)
+    parser.add_argument("--max-new-tokens", type=int)
+    parser.add_argument("--seed", type=int, help="make sampling reproducible")
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="print the answer as it is generated, instead of formatted at the end",
+    )
     parser.add_argument("--output-dir", type=Path, help="write result.json here")
     parser.add_argument("--version", action="version", version=f"root {__version__}")
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="show model loading and step logs"
+    )
     parser.add_argument("--list", action="store_true", help="list configured agents and exit")
     parser.add_argument(
         "--init",
@@ -64,7 +106,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    logging.basicConfig(
+        level=logging.INFO if args.verbose else logging.WARNING,
+        format="%(levelname)s %(message)s",
+    )
+    if not args.verbose:
+        # transformers draws a weight-loading bar of its own.
+        from transformers.utils import logging as hf_logging
+
+        hf_logging.disable_progress_bar()
+        hf_logging.set_verbosity_error()
+    if args.no_grammar:
+        os.environ["ROOT_NO_GRAMMAR"] = "1"
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     if args.init:
@@ -102,9 +155,26 @@ def main(argv: list[str] | None = None) -> int:
 
     models = load_models()
     choice = resolve_model(args.model, models)
-    model = LocalModel.load(
-        choice.id, device=args.device, trust_remote_code=choice.trust_remote_code
-    )
+    try:
+        with working(f"Loading {choice.id}"):
+            model = load_engine(
+                choice.id,
+                args.engine,
+                device=args.device,
+                trust_remote_code=choice.trust_remote_code,
+                base_url=args.engine_url,
+            )
+    except EngineUnavailable as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    except Exception as exc:
+        # A mistyped model or a repository that is gone should say so, not
+        # unwind a stack of hub internals at someone typing at a prompt.
+        print(f"could not load {choice.id}: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print("run with -v for the full traceback", file=sys.stderr)
+        if args.verbose:
+            raise
+        return 1
 
     # No prompt and a terminal attached means the user wants the interactive
     # session, where the model is loaded once and reused.
@@ -117,14 +187,22 @@ def main(argv: list[str] | None = None) -> int:
             model=model,
             models=models,
             device=args.device,
+            engine=args.engine,
             trace=args.trace,
         )
         return start_terminal(session)
 
     route = choose_agent(prompt, set(agents)) if args.agent == AUTO else Route(args.agent, None)
     spec = agents[route.agent]
+    overrides = {
+        name: value
+        for name, value in vars(args).items()
+        if value is not None and name in DECODING_FLAGS
+    }
     if args.max_steps:
-        spec = replace(spec, max_steps=args.max_steps)
+        overrides["max_steps"] = args.max_steps
+    if overrides:
+        spec = replace(spec, **overrides)
     if args.agent == AUTO and args.trace != "off":
         print(render_route(spec.name, route.rule), file=sys.stderr)
 
@@ -132,8 +210,29 @@ def main(argv: list[str] | None = None) -> int:
         for line in render_step(step, args.trace):
             print(line, file=sys.stderr)
 
-    result = run_agent(model, spec, prompt, tools, on_step=show)
-    print(result.answer, flush=True)
+    gate = None
+    if args.stream:
+        gate = StreamGate(
+            model.call_format.marker,
+            lambda text: print(text, end="", flush=True),
+            thinking=getattr(model, "thinks_first", False),
+        )
+
+    result = run_agent(
+        model,
+        spec,
+        prompt,
+        tools,
+        on_step=show,
+        on_token=gate.feed if gate else None,
+        agents=agents,
+    )
+    if gate:
+        gate.close()
+    if gate and gate.emitted:
+        print(flush=True)
+    else:
+        print(result.answer, flush=True)
     if args.trace != "off":
         print(render_summary(result, len(spec.tools)), file=sys.stderr)
 

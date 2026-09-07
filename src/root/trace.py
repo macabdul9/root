@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Callable
 
 from .agent import AgentResult, Step
+from .formats import THINK_CLOSE, THINK_OPEN
 
 LEVELS = ("off", "on", "full")
 
 RESULT_PREVIEW_CHARS = 200
+TAG_TAIL = 32
 CODE_INDENT = "    "
 ARGUMENT_PREVIEW_CHARS = 120
 
@@ -60,6 +63,85 @@ def render_step(step: Step, level: str = "on", color: bool = False) -> list[str]
 def render_route(agent: str, rule: str | None, color: bool = False) -> str:
     why = rule or "no rule matched"
     return _dim(f"  ● route → {agent} ({why})", color)
+
+
+class StreamGate:
+    """Forward streamed text, without leaking a tool call to the screen.
+
+    A generation is only known to be an answer once it is clear it is not a
+    call, so text that could still become the format's opening marker is held
+    back, and everything is dropped once the marker actually arrives.
+    """
+
+    def __init__(self, marker: str, write: Callable[[str], None], thinking: bool = False) -> None:
+        self.marker = marker
+        self.write = write
+        self.buffer = ""
+        self.suppressed = False
+        self.emitted = False
+        self.thinking = thinking
+
+    def feed(self, chunk: str) -> None:
+        if self.suppressed:
+            return
+        self.buffer += chunk
+        if self.thinking and not self._leave_thinking():
+            return
+        if self._enter_thinking():
+            return
+        if self.marker and self.marker in self.buffer:
+            self.suppressed = True
+            self.buffer = ""
+            return
+        held = self._held()
+        ready, self.buffer = (
+            self.buffer[: len(self.buffer) - held],
+            self.buffer[len(self.buffer) - held :],
+        )
+        if ready:
+            self.emitted = True
+            self.write(ready)
+
+    def _leave_thinking(self) -> bool:
+        """Drop reasoning until its closing tag, then resume."""
+        closing = THINK_CLOSE.search(self.buffer)
+        if closing is None:
+            # Keep only enough tail to match a tag split across chunks.
+            self.buffer = self.buffer[-TAG_TAIL:]
+            return False
+        self.thinking = False
+        self.buffer = self.buffer[closing.end() :]
+        return True
+
+    def _enter_thinking(self) -> bool:
+        """Emit anything before a reasoning block, then start dropping."""
+        opening = THINK_OPEN.search(self.buffer)
+        if opening is None:
+            return False
+        before = self.buffer[: opening.start()]
+        if before:
+            self.emitted = True
+            self.write(before)
+        self.thinking = True
+        self.buffer = self.buffer[opening.end() :]
+        return not self._leave_thinking()
+
+    def close(self) -> None:
+        if self.thinking:
+            self.buffer = ""
+        if not self.suppressed and self.buffer:
+            self.emitted = True
+            self.write(self.buffer)
+        self.buffer = ""
+
+    def _held(self) -> int:
+        """How much of the tail could still turn into the marker."""
+        if not self.marker:
+            return 0
+        for size in range(min(len(self.buffer), len(self.marker) - 1), 0, -1):
+            if self.marker.startswith(self.buffer[-size:]):
+                return size
+        return 0
 
 
 def format_answer(text: str, color: bool = False) -> str:

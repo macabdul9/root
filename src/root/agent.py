@@ -4,11 +4,13 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from .config import AgentSpec
-from .formats import GENERIC, CallFormat, strip_thinking
-from .route import is_conversational
+from .formats import GENERIC, CallFormat, strip_calls, strip_thinking
+from .identity import describe
+from .route import is_conversational, is_identity_question
 from .tools import Tool
 
 if TYPE_CHECKING:
@@ -65,6 +67,41 @@ class AgentResult:
         return sum(step.generated_tokens for step in self.steps)
 
 
+NOTHING_USABLE = "the model wrote no answer; /trace full shows what it produced"
+
+
+def _answer_from(text: str, call_format: CallFormat, calls: list[ToolCall]) -> str:
+    """The answer, with reasoning and tool markup taken out.
+
+    Stripping can empty the text entirely: a small model often ends a turn by
+    repeating the call rather than writing prose about it. The tool already has
+    the answer in that case, so show what it returned instead of nothing.
+    """
+    answer = strip_calls(strip_thinking(text), call_format)
+    if answer:
+        return answer
+    if calls:
+        return calls[-1].result
+    return NOTHING_USABLE if text.strip() else ""
+
+
+def compose_system(spec: AgentSpec, available: dict[str, Tool], model_id: str) -> str:
+    """The agent's prompt, behind the preamble every agent shares.
+
+    Substitution is plain replacement rather than str.format, because prompts
+    contain braces of their own and a JSON example should not be a template.
+    """
+    if not spec.preamble:
+        return spec.system_prompt.strip()
+    filled = (
+        spec.preamble.replace("{{model}}", model_id)
+        .replace("{{agent}}", spec.name)
+        .replace("{{tools}}", ", ".join(available) or "none")
+        .replace("{{date}}", datetime.now().strftime("%Y-%m-%d"))
+    )
+    return f"{filled.strip()}\n\n{spec.system_prompt.strip()}"
+
+
 def render_arguments(arguments: list[tuple[str | None, str]], tool: Tool | None = None) -> str:
     """Arguments as they should appear in a trace.
 
@@ -102,16 +139,28 @@ def run_agent(
     tools: dict[str, Tool] | None = None,
     history: list[dict[str, str]] | None = None,
     on_step: Callable[[Step], None] | None = None,
+    on_token: Callable[[str], None] | None = None,
+    agents: dict[str, AgentSpec] | None = None,
 ) -> AgentResult:
     """Answer one prompt, calling tools until the model stops asking for them.
 
-    `history` carries earlier turns of a conversation, and `on_step` fires as
-    each step finishes so a caller can trace the loop while it runs instead of
-    waiting for the whole thing.
+    `history` carries earlier turns of a conversation, `on_step` fires as each
+    step finishes so a caller can trace the loop while it runs, and `on_token`
+    receives text as the model produces it.
+
+    A question about what root is never reaches the model. Asked who it is, a
+    model this size reports having been built by Naver, or by Microsoft, or by
+    whoever its training data suggests; the answer is assembled from what is
+    actually loaded instead.
     """
+    if is_identity_question(prompt):
+        answer = describe(getattr(model, "model_id", "an unknown model"), tools or {}, agents or {})
+        if on_token:
+            on_token(answer)
+        return AgentResult(agent=spec.name, prompt=prompt, answer=answer)
     call_format = getattr(model, "call_format", GENERIC)
     available = {name: tools[name] for name in spec.tools} if tools else {}
-    system = spec.system_prompt.strip()
+    system = compose_system(spec, available, getattr(model, "model_id", "an unknown model"))
     if available:
         system = f"{system}\n{TOOL_NUDGE}"
 
@@ -134,10 +183,14 @@ def run_agent(
         generation = model.generate(
             messages,
             tools=schemas,
-            max_new_tokens=spec.max_new_tokens,
-            temperature=spec.temperature,
+            decoding=spec.decoding,
             stop=list(call_format.stop) if available else None,
             prefill=prefill,
+            # A forced turn is a tool call by construction: nothing worth
+            # streaming, and the one case where the output can be constrained
+            # to a well-formed call without ruling out a plain answer.
+            on_token=None if prefill else on_token,
+            constrain=prefill is not None,
         )
         step = Step(
             index=index,
@@ -151,7 +204,7 @@ def run_agent(
 
         call = call_format.parse(text, set(available)) if available else None
         if call is None:
-            result.answer = strip_thinking(text)
+            result.answer = _answer_from(text, call_format, result.calls)
             result.steps.append(step)
             if on_step:
                 on_step(step)
@@ -190,10 +243,10 @@ def run_agent(
     result.hit_step_limit = True
     final = model.generate(
         messages + [{"role": "user", "content": "Answer now, without calling a tool."}],
-        max_new_tokens=spec.max_new_tokens,
-        temperature=spec.temperature,
+        decoding=spec.decoding,
+        on_token=on_token,
     )
-    result.answer = strip_thinking(final.text)
+    result.answer = _answer_from(final.text, call_format, result.calls)
     last = Step(
         index=spec.max_steps,
         generation=final.text,

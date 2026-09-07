@@ -130,3 +130,33 @@ def test_forced_first_call_is_recorded_on_the_step(tmp_path):
 
     assert result.steps[0].forced
     assert not result.steps[1].forced
+
+
+def test_tool_markup_left_in_an_answer_is_not_printed(tmp_path):
+    """Qwen2.5-Coder ends turns by repeating the call instead of writing prose."""
+    spec = AgentSpec(name="calc", system_prompt="solve it", tools=("calculator",))
+    model = ScriptedModel(
+        [
+            "calculator('6 * 7')",
+            '{"name": "calculator", "arguments": {"expression": "42"}}',
+        ]
+    )
+
+    result = run_agent(model, spec, "what is 6 times 7", build_tools(tmp_path))
+
+    assert result.answer == "42"
+    assert "arguments" not in result.answer
+
+
+def test_an_answer_that_strips_to_nothing_falls_back_to_the_tool(tmp_path):
+    spec = AgentSpec(name="calc", system_prompt="solve it", tools=("calculator",))
+    model = ScriptedModel(["calculator('6 * 7')", "<|tool_call_end|>"])
+
+    assert run_agent(model, spec, "q", build_tools(tmp_path)).answer == "42"
+
+
+def test_prose_is_left_alone(tmp_path):
+    spec = AgentSpec(name="calc", system_prompt="solve it", tools=("calculator",))
+    model = ScriptedModel(["calculator('6 * 7')", "The answer is 42."])
+
+    assert run_agent(model, spec, "q", build_tools(tmp_path)).answer == "The answer is 42."

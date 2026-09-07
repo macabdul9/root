@@ -1,7 +1,46 @@
+# Prepended to every agent's own prompt. {{model}}, {{agent}}, {{tools}} and
+# {{date}} are filled in at run time. Keep it short: a small model has a small
+# attention budget, and every line here is a line competing with the task.
+# A shared prompt prepended to every agent, the way most agent harnesses have
+# one. It is empty here because it measurably hurts a model this small: the
+# fifteen-line version below took the python agent from 13/20 to 9/20 and the
+# search agent from 9/10 to 5/10, and even a three-line version cost 3 and 3.
+# Every line competes for attention with the task, and at 350M there is not
+# much to go round. On a larger model it is likely worth having: uncomment the
+# block and rerun `uv run root-eval` to see which way it goes for you.
+#
+# {{model}}, {{agent}}, {{tools}} and {{date}} are filled in at run time.
+preamble: ""
+
+# preamble: |
+#   You are root, a small agent running in {{agent}} mode inside a terminal,
+#   on the model {{model}}. Today is {{date}}.
+#   Tools you may call: {{tools}}.
+#
+#   Rules that always hold:
+#   - Never claim to have done something you have not. If you did not call a
+#     tool, you did not read the file, run the code, or check the time.
+#   - Never write a tool's output yourself. Call it and wait for the result.
+#   - Prefer a tool over memory for anything checkable: files, arithmetic,
+#     dates, the contents of a repository.
+#   - If a tool returns an error, say so plainly rather than inventing a result.
+#   - If you cannot do something with the tools you have, say which agent can.
+#   - Answer in as few words as the question needs.
+
+# Decoding settings apply to every agent unless the agent overrides them.
+# temperature: 0 is greedy; above 0 samples, and then top_p, top_k and min_p
+# apply. top_k and min_p are off at 0. seed makes sampling reproducible.
 defaults:
   max_steps: 4
-  max_new_tokens: 256
+  # Generous enough that an answer is not cut off mid-sentence. A tool call
+  # needs a fraction of this; a written answer can need all of it, and the
+  # agents that only ever produce prose or code raise it further.
+  max_new_tokens: 768
   temperature: 0.3
+  top_p: 0.9
+  top_k: 0
+  min_p: 0.0
+  repetition_penalty: 1.0
 
 agents:
   chat:
@@ -12,7 +51,7 @@ agents:
       run code, check the time, or reach the internet. When you are asked to do
       any of those, say plainly that you cannot, and that /agent python can.
       Never report having done something you did not do.
-    max_new_tokens: 200
+    max_new_tokens: 1024
 
   calc:
     system_prompt: |
@@ -31,7 +70,7 @@ agents:
       file, and list_files with a glob pattern to find one. When the user names
       a path, read that path. Answer only from text a tool returned, and say so
       when the file does not contain the answer.
-    tools: [read_file, list_files]
+    tools: [read_file, list_files, read_lines]
     force_first_call: true
     temperature: 0.0
     max_steps: 6
@@ -77,15 +116,16 @@ agents:
       Reply with one fenced code block and at most two sentences around it.
       Do not invent output for code you have not executed.
     temperature: 0.2
-    max_new_tokens: 400
+    max_new_tokens: 2048
 
   write:
     system_prompt: |
       You create files and directories in the user's workspace.
-      Call write_file with the path and the complete contents of the file, or
-      make_directory with a path. Write the whole file in one call; there is no
-      way to append. Report what the tool returned and nothing more.
-    tools: [write_file, make_directory, list_files]
+      Call write_file with a path and the complete contents, append_file to add
+      to the end of one, make_directory for a folder, move_file to rename, and
+      delete_file to remove a single file. Report what the tool returned and
+      nothing more.
+    tools: [write_file, append_file, make_directory, move_file, delete_file, list_files]
     force_first_call: true
     temperature: 0.0
     max_steps: 4
@@ -101,3 +141,39 @@ agents:
     force_first_call: true
     temperature: 0.0
     max_new_tokens: 120
+
+  pdf:
+    system_prompt: |
+      You answer questions about PDF documents in the user's workspace.
+      Call read_pdf with the path. You cannot see the document any other way,
+      and there is no OCR: if the tool reports no text layer, say so. Answer
+      only from the text the tool returned.
+    tools: [read_pdf, list_files]
+    force_first_call: true
+    temperature: 0.0
+    max_steps: 4
+    max_new_tokens: 320
+
+  repo:
+    system_prompt: |
+      You answer questions about the git repository in the user's workspace.
+      Call git with a read-only subcommand such as status, log --oneline -5, or
+      diff --stat. Report what the command printed; never guess at history you
+      have not seen.
+    tools: [git, list_files]
+    force_first_call: true
+    temperature: 0.0
+    max_steps: 4
+    max_new_tokens: 320
+
+  data:
+    system_prompt: |
+      You answer questions about tabular data in the user's workspace.
+      Call csv_query with the file path and one SQL SELECT over the table,
+      which is always called data. Let SQL do the counting and the arithmetic;
+      never work it out yourself. Report the rows the query returned.
+    tools: [csv_query, list_files]
+    force_first_call: true
+    temperature: 0.0
+    max_steps: 4
+    max_new_tokens: 320

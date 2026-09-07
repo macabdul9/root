@@ -18,6 +18,29 @@ _CONVERSATIONAL = re.compile(
 )
 
 
+# Questions about what root is. Answered from a template rather than by the
+# model: asked who it is, a sub-billion model will cheerfully report having been
+# built by Naver, or by Microsoft, or by whoever its training data suggests.
+_IDENTITY = re.compile(
+    # The loose openers need a guard: "what are you going to do with [1,2,3]"
+    # is a task, not a question about root.
+    r"\bwho\s+(are|r)\s+(you|u)\b(?!\s+(going|about|trying|planning))"
+    r"|\bwhat\s+are\s+you\b(?!\s+(going|doing|about|trying|planning|working|thinking))"
+    r"|\bwhat('?s| is)\s+your\s+name\b"
+    r"|\bwho\s+(built|made|created|wrote)\s+(you|this)\b"
+    r"|\bwhat\s+(model|llm)\s+(are\s+you|is\s+this|do\s+you\s+use)\b"
+    r"|\bwhich\s+model\s+(are\s+you|is\s+this)\b"
+    r"|\bintroduce\s+yourself\b"
+    r"|\btell\s+me\s+about\s+yourself\b",
+    re.IGNORECASE,
+)
+
+
+def is_identity_question(prompt: str) -> bool:
+    """True for `who are you` and its variants."""
+    return bool(_IDENTITY.search(prompt))
+
+
 def is_conversational(prompt: str) -> bool:
     """True for prompts about the assistant itself, which no tool can answer."""
     return bool(_CONVERSATIONAL.search(prompt))
@@ -36,10 +59,26 @@ RULES: tuple[tuple[str, str, str], ...] = (
         "code",
     ),
     (
-        "create a file",
-        r"\b(create|write|save|make|append to)\b.{0,25}"
-        r"\b(files?|director(y|ies)|folders?|\w+\.\w{1,4})\b",
+        "change a file",
+        r"\b(create|write|save|make|append|add|rename|move|copy|delete|remove|overwrite)\b"
+        r".{0,30}\b(files?|director(y|ies)|folders?|\w+\.\w{1,4})\b",
         "write",
+    ),
+    (
+        "tabular",
+        r"\b[\w./-]+\.csv\b|\b(csv|spreadsheet|rows?|columns?)\b",
+        "data",
+    ),
+    (
+        "pdf",
+        r"\b[\w./-]+\.pdf\b|\bpdf\b",
+        "pdf",
+    ),
+    (
+        "git",
+        r"\bgit\b|\b(commit|commits|branch|staged|unstaged|working tree)\b"
+        r"|\bwhat changed\b",
+        "repo",
     ),
     (
         "code reference",

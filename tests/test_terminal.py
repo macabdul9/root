@@ -170,7 +170,7 @@ def test_switching_model_resolves_an_alias_and_clears_history(session, monkeypat
     session.model = SimpleNamespace(model_id="LiquidAI/LFM2.5-350M", unload=lambda: None)
     session.remember("hi", "hello")
     loaded = SimpleNamespace(model_id="Qwen/Qwen3-0.6B", call_format=GENERIC)
-    monkeypatch.setattr(terminal, "load_model", lambda choice, device: loaded)
+    monkeypatch.setattr(terminal, "load_model", lambda choice, device, engine=None: loaded)
 
     message = run_command(session, "/model qwen3-06b")
 
@@ -187,7 +187,9 @@ def test_switching_to_the_loaded_model_does_nothing(session):
 def test_an_unknown_model_name_is_passed_through_as_an_id(session, monkeypatch):
     session.model = SimpleNamespace(model_id="a/b", unload=lambda: None)
     seen = []
-    monkeypatch.setattr(terminal, "load_model", lambda choice, device: _record(seen, choice))
+    monkeypatch.setattr(
+        terminal, "load_model", lambda choice, device, engine=None: _record(seen, choice)
+    )
 
     run_command(session, "/model some/other-model")
 
@@ -202,7 +204,9 @@ def test_remote_code_is_only_used_when_the_entry_asks_for_it(session, monkeypatc
     }
     session.model = SimpleNamespace(model_id="a/b", unload=lambda: None)
     seen = []
-    monkeypatch.setattr(terminal, "load_model", lambda choice, device: _record(seen, choice))
+    monkeypatch.setattr(
+        terminal, "load_model", lambda choice, device, engine=None: _record(seen, choice)
+    )
 
     run_command(session, "/model safe")
     run_command(session, "/model custom")
@@ -224,3 +228,104 @@ def test_bare_trace_says_how_to_change_it(session):
 def test_model_listing_says_how_to_load_one(session):
     session.model = SimpleNamespace(model_id="a/b")
     assert "/model ALIAS" in run_command(session, "/model")
+
+
+def test_decoding_shows_the_current_agent_settings(session):
+    shown = run_command(session, "/decoding")
+    assert shown.startswith("chat: temperature=")
+    assert "max_new_tokens=" in shown
+
+
+def test_decoding_sets_several_values_at_once(session):
+    run_command(session, "/decoding temperature=0.9 top_k=40")
+    assert session.spec.decoding.temperature == 0.9
+    assert session.spec.decoding.top_k == 40
+
+
+def test_decoding_rejects_an_out_of_range_value(session):
+    assert "top_p must be in" in run_command(session, "/decoding top_p=3")
+    assert session.spec.decoding.top_p == 0.9
+
+
+def test_decoding_rejects_an_unknown_setting(session):
+    assert "unknown setting" in run_command(session, "/decoding warmth=2")
+
+
+def test_decoding_rejects_a_non_number(session):
+    assert "needs a number" in run_command(session, "/decoding temperature=warm")
+
+
+def test_decoding_rejects_a_bare_word(session):
+    assert "expected name=value" in run_command(session, "/decoding hot")
+
+
+def test_stream_toggles(session):
+    assert run_command(session, "/stream") == "stream: on"
+    assert run_command(session, "/stream off").startswith("stream: off")
+    assert not session.stream
+    run_command(session, "/stream on")
+    assert session.stream
+
+
+def test_stream_rejects_anything_else(session):
+    assert run_command(session, "/stream fast") == "usage: /stream on|off"
+
+
+def test_inference_shows_the_current_engine(session):
+    assert run_command(session, "/inference").startswith("inference: transformers")
+
+
+def test_inference_rejects_an_unknown_engine(session):
+    assert "unknown engine" in run_command(session, "/inference tensorrt")
+    assert session.engine == "transformers"
+
+
+def test_switching_to_the_current_engine_does_nothing(session):
+    assert run_command(session, "/inference transformers") == "already on transformers"
+
+
+def test_a_failed_engine_switch_keeps_the_old_model(session, monkeypatch):
+    from root.engines import EngineUnavailable
+
+    original = SimpleNamespace(model_id="a/b", unload=lambda: None)
+    session.model = original
+
+    def refuse(choice, device, engine):
+        raise EngineUnavailable("ollama at http://127.0.0.1:11434 is not reachable")
+
+    monkeypatch.setattr(terminal, "load_model", refuse)
+
+    message = run_command(session, "/inference ollama")
+
+    assert "not reachable" in message
+    assert session.engine == "transformers"
+    assert session.model is original
+
+
+def test_load_model_accepts_the_arguments_its_callers_pass():
+    """The commands monkeypatch load_model, so only this checks the real one.
+
+    A signature that drifted from its callers shipped once already: /model and
+    /inference both raised TypeError at runtime while every test passed.
+    """
+    from inspect import signature
+
+    from root.config import ModelChoice
+
+    signature(terminal.load_model).bind(ModelChoice("a", "a/b"), None, "transformers")
+
+
+def test_engine_is_an_alias_for_inference(session):
+    assert run_command(session, "/engine") == run_command(session, "/inference")
+
+
+def test_a_pinned_agent_is_flagged_when_auto_would_differ(session):
+    """`/agent python` then `save it to notes.txt` runs code instead of saving,
+    and nothing said why."""
+    from root.route import choose_agent
+
+    session.agent = "python"
+    elsewhere = choose_agent("save it to a file called notes.txt", set(session.agents) | {"write"})
+
+    assert elsewhere.matched
+    assert elsewhere.agent != session.agent

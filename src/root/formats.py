@@ -25,6 +25,11 @@ _QWEN_PARAMETER = re.compile(
     r"<parameter=([a-zA-Z_]\w*)\s*>\s*(.*?)\s*(?:</parameter>|$)", re.DOTALL
 )
 
+# A JSON object that is only a tool call, left in the text as if it were prose.
+_BARE_JSON_CALL = re.compile(
+    r'^\s*\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:.*\}\s*$', re.DOTALL | re.MULTILINE
+)
+
 _IFM_BLOCK = re.compile(r"<ifm\|tool_call>\s*(.+?)\s*(?:</ifm\|tool_call>|$)", re.DOTALL)
 _IFM_ARG_PAIR = re.compile(
     r"<ifm\|arg_key>\s*(.*?)\s*</ifm\|arg_key>.*?"
@@ -35,8 +40,8 @@ _IFM_ARG_PAIR = re.compile(
 # Reasoning models wrap their scratchpad in a tag: <think> for Qwen, <ifm|think>
 # and its faster variants for K2-Horizon.
 _THINKING = re.compile(r"<((?:\w+\|)?think\w*)>.*?</\1>", re.DOTALL)
-_THINK_OPEN = re.compile(r"<(?:\w+\|)?think\w*>")
-_THINK_CLOSE = re.compile(r"</(?:\w+\|)?think\w*>")
+THINK_OPEN = re.compile(r"<(?:\w+\|)?think\w*>")
+THINK_CLOSE = re.compile(r"</(?:\w+\|)?think\w*>")
 
 THINKING_TAGS = (
     "<think>",
@@ -50,6 +55,42 @@ THINKING_TAGS = (
 )
 
 
+def starts_inside_thinking(prompt: str) -> bool:
+    """Whether a rendered generation prompt leaves a reasoning block open.
+
+    K2-Horizon's template ends the generation prompt with `<ifm|think>`, so the
+    model emits reasoning first and only the closing tag marks the answer. Qwen
+    closes the block in the prompt when thinking is disabled, and most models
+    have no such block at all.
+    """
+    opened = list(THINK_OPEN.finditer(prompt))
+    if not opened:
+        return False
+    closed = list(THINK_CLOSE.finditer(prompt))
+    return not closed or opened[-1].start() > closed[-1].start()
+
+
+def strip_calls(text: str, call_format: CallFormat | None = None) -> str:
+    """Remove tool-call markup from text being shown as an answer.
+
+    A model that keeps writing after its call, or emits one for a tool that
+    does not exist, or is cut off mid-call, leaves the raw markup as the
+    answer. Qwen2.5-Coder ended a turn with a bare
+    `{"name": "run_python", "arguments": ...}` and another with a truncated
+    `<tool_call>` block; neither is something to print at a person.
+    """
+    markers = set(THINKING_TAGS)
+    if call_format is not None:
+        markers |= {*call_format.stop, *call_format.keep, call_format.prefill}
+    for block in (_LFM2_MARKED, _QWEN_BLOCK, _IFM_BLOCK):
+        text = block.sub("", text)
+    for marker in sorted(markers, key=len, reverse=True):
+        if marker and marker not in THINKING_TAGS:
+            text = text.replace(marker, "")
+    text = _BARE_JSON_CALL.sub("", text)
+    return text.strip()
+
+
 def strip_thinking(text: str) -> str:
     """Remove a reasoning block from text meant for the user.
 
@@ -60,10 +101,10 @@ def strip_thinking(text: str) -> str:
     the token limit, leaving an opener with no close.
     """
     text = _THINKING.sub("", text)
-    closes = list(_THINK_CLOSE.finditer(text))
+    closes = list(THINK_CLOSE.finditer(text))
     if closes:
         text = text[closes[-1].end() :]
-    opened = _THINK_OPEN.split(text)
+    opened = THINK_OPEN.split(text)
     if len(opened) > 1:
         text = opened[0]
     return text.strip()
@@ -134,6 +175,54 @@ def _json_arguments(payload: dict) -> Arguments:
 
 
 def parse_qwen_json(text: str, tool_names: set[str]) -> Parsed:
+    parsed = _parse_qwen_blocks(text)
+    if parsed:
+        return parsed
+    # Qwen2.5-Coder writes the object without a closing tag and then keeps
+    # going, so the block match runs to the end of the text and no longer
+    # parses. Scanning for the first balanced object finds the call in that,
+    # in a bare object with no wrapper at all, and in one followed by prose.
+    # An unrecognised call becomes an error the model can act on, where
+    # ignoring it leaves the turn with no answer at all.
+    payload = _first_json_object(text)
+    if isinstance(payload, dict) and "name" in payload:
+        return str(payload["name"]), _json_arguments(payload)
+    return _parse_bare_call(text, tool_names)
+
+
+def _first_json_object(text: str) -> dict | None:
+    """The first balanced {...} in the text, parsed, or None.
+
+    Brace counting rather than a regular expression, because the arguments are
+    nested objects and quotes may hold braces of their own.
+    """
+    for start in (index for index, char in enumerate(text) if char == "{"):
+        depth, in_string, escaped = 0, False, False
+        for position in range(start, len(text)):
+            char = text[position]
+            if escaped:
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = not in_string
+            elif not in_string and char == "{":
+                depth += 1
+            elif not in_string and char == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        found = json.loads(text[start : position + 1])
+                    except json.JSONDecodeError:
+                        break
+                    if isinstance(found, dict) and "name" in found:
+                        return found
+                    break
+    return None
+
+
+def _parse_qwen_blocks(text: str) -> Parsed:
     for match in _QWEN_BLOCK.finditer(text):
         body = match.group(1)
         # A truncated block loses its closing brace; adding one back is safe
@@ -145,7 +234,7 @@ def parse_qwen_json(text: str, tool_names: set[str]) -> Parsed:
                 continue
             if isinstance(payload, dict) and "name" in payload:
                 return str(payload["name"]), _json_arguments(payload)
-    return _parse_bare_call(text, tool_names)
+    return None
 
 
 def parse_qwen_xml(text: str, tool_names: set[str]) -> Parsed:
@@ -174,6 +263,74 @@ def parse_ifm(text: str, tool_names: set[str]) -> Parsed:
     return name, [(key, value) for key, value in _IFM_ARG_PAIR.findall(body)]
 
 
+# What a value may contain, per format: whatever cannot terminate the field.
+# Empty is allowed everywhere, because a tool can take an empty argument -
+# `today` with no offset means now, and forbidding it makes the model invent
+# one. The quoted form accepts either delimiter, so code holding an apostrophe
+# can be written inside double quotes rather than escaped into illegibility.
+# Unbounded rather than length-capped: a counted repetition like {0,600} makes
+# the compiler unroll 600 states per position, and across an alternation of
+# tools that overflows the DFA and the grammar silently falls back. Length is
+# already bounded by max_new_tokens.
+_SINGLE = r"'([^'\\]|\\.)*'"
+_DOUBLE = r"\"([^\"\\]|\\.)*\""
+_QUOTED = f"({_SINGLE}|{_DOUBLE})"
+_JSON_STRING = r"([^\"\\]|\\.)*"
+_UNTIL_TAG = r"[^<]*"
+
+Signature = tuple[str, tuple[str, ...]]
+
+
+def _alternatives(parts: list[str]) -> str:
+    return "(" + "|".join(parts) + ")"
+
+
+def regex_lfm2(signatures: list[Signature]) -> str:
+    calls = [
+        name + r"\(" + r", ".join(f"{p}={_QUOTED}" for p in params) + r"\)"
+        for name, params in signatures
+    ]
+    return _alternatives(calls) + r"\]<\|tool_call_end\|>"
+
+
+def regex_qwen_json(signatures: list[Signature]) -> str:
+    # The prefill already opened `{"name": "`, so the name comes first and bare.
+    calls = [
+        name
+        + r'", "arguments": \{'
+        + r", ".join(f'"{p}": "{_JSON_STRING}"' for p in params)
+        + r"\}\}"
+        for name, params in signatures
+    ]
+    return _alternatives(calls) + r"\n?</tool_call>"
+
+
+def regex_qwen_xml(signatures: list[Signature]) -> str:
+    calls = [
+        name
+        + r">\n"
+        + "".join(f"<parameter={p}>\n{_UNTIL_TAG}\n</parameter>\n" for p in params)
+        + r"</function>\n</tool_call>"
+        for name, params in signatures
+    ]
+    return _alternatives(calls)
+
+
+def regex_ifm(signatures: list[Signature]) -> str:
+    calls = [
+        name
+        + r"\n"
+        + "".join(
+            f"<ifm\\|arg_key>{p}</ifm\\|arg_key>\\n"
+            f"<ifm\\|arg_value>{_UNTIL_TAG}</ifm\\|arg_value>\\n"
+            for p in params
+        )
+        + r"</ifm\|tool_call>\n</ifm\|tool_calls>"
+        for name, params in signatures
+    ]
+    return _alternatives(calls)
+
+
 @dataclass(frozen=True, slots=True)
 class CallFormat:
     """How one model family writes a tool call.
@@ -189,6 +346,7 @@ class CallFormat:
     stop: tuple[str, ...]
     keep: tuple[str, ...]
     parse: Callable[[str, set[str]], Parsed]
+    regex: Callable[[list[Signature]], str] | None = None
 
     @property
     def forceable(self) -> bool:
@@ -211,6 +369,7 @@ LFM2 = CallFormat(
     stop=("<|tool_call_end|>",),
     keep=("<|tool_call_start|>",),
     parse=parse_lfm2,
+    regex=regex_lfm2,
 )
 QWEN_XML = CallFormat(
     name="qwen-xml",
@@ -219,6 +378,7 @@ QWEN_XML = CallFormat(
     stop=("</tool_call>",),
     keep=("<tool_call>", "<function=", "</function>", "<parameter=", "</parameter>"),
     parse=parse_qwen_xml,
+    regex=regex_qwen_xml,
 )
 QWEN_JSON = CallFormat(
     name="qwen-json",
@@ -227,6 +387,7 @@ QWEN_JSON = CallFormat(
     stop=("</tool_call>",),
     keep=("<tool_call>",),
     parse=parse_qwen_json,
+    regex=regex_qwen_json,
 )
 IFM = CallFormat(
     name="ifm",
@@ -244,6 +405,7 @@ IFM = CallFormat(
         "</ifm|arg_value>",
     ),
     parse=parse_ifm,
+    regex=regex_ifm,
 )
 GENERIC = CallFormat(
     name="generic",

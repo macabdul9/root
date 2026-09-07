@@ -131,6 +131,14 @@ def score_case(case: EvalCase, result: AgentResult) -> CaseScore:
     )
 
 
+def by_agent(scores: list[CaseScore]) -> dict[str, list[CaseScore]]:
+    """Group scores by agent, in the order the agents first appear."""
+    grouped: dict[str, list[CaseScore]] = {}
+    for score in scores:
+        grouped.setdefault(score.case.agent, []).append(score)
+    return grouped
+
+
 def accuracy(scores: list[CaseScore]) -> dict[str, float]:
     if not scores:
         return {"tool": 0.0, "answer": 0.0, "overall": 0.0}

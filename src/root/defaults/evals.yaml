@@ -470,3 +470,83 @@ cases:
     prompt: Read pyproject.toml and tell me what is in it.
     expect_tool: none
     expect_answer_excludes: ["[project]", "[build-system]"]
+
+  # --- pdf: reading a document --------------------------------------------
+  - agent: pdf
+    workspace: workspace
+    prompt: What is the title of report.pdf?
+    expect_tool: read_pdf
+    expect_argument_contains: report.pdf
+    expect_answer_contains: ["ranking report"]
+  - agent: pdf
+    workspace: workspace
+    prompt: What mean reciprocal rank does report.pdf give?
+    expect_tool: read_pdf
+    expect_answer_contains: ["0.68"]
+  - agent: pdf
+    workspace: workspace
+    prompt: Who prepared report.pdf?
+    expect_tool: read_pdf
+    expect_answer_contains: ["ranking team"]
+
+  # --- files: reading a span of a long file --------------------------------
+  - agent: files
+    workspace: workspace
+    prompt: Show me lines 1 to 5 of src/model.py
+    expect_tool: read_lines
+    expect_argument_contains: model.py
+    expect_answer_contains: ["import math"]
+  - agent: files
+    workspace: workspace
+    prompt: What is on line 4 of src/model.py?
+    expect_tool: read_lines
+    expect_answer_contains: ["MAX_CANDIDATES"]
+
+  # --- write: the rest of file management ----------------------------------
+  - agent: write
+    workspace: tmp
+    prompt: Create notes.txt containing "first line", then append "second line" to it.
+    expect_tool: write_file
+    expect_argument_contains: notes.txt
+  - agent: write
+    workspace: tmp
+    prompt: Make a file called draft.md with the word draft in it.
+    expect_tool: write_file
+    expect_argument_contains: draft.md
+  - agent: write
+    workspace: tmp
+    prompt: Add the line "done" to the end of log.txt
+    expect_tool: append_file
+    expect_argument_contains: log.txt
+
+  # --- repo: read-only git --------------------------------------------------
+  - agent: repo
+    prompt: What is the git status of this repository?
+    expect_tool: git
+    expect_argument_contains: status
+  - agent: repo
+    prompt: Show me the last two commits in one line each.
+    expect_tool: git
+    expect_argument_contains: log
+
+  # --- data: SQL over a CSV instead of arithmetic in the model --------------
+  - agent: data
+    workspace: workspace
+    prompt: How many rows are in data/records.csv?
+    expect_tool: csv_query
+    expect_answer_contains: ["4"]
+  - agent: data
+    workspace: workspace
+    prompt: What is the highest score in data/records.csv?
+    expect_tool: csv_query
+    expect_answer_contains: ["91"]
+  - agent: data
+    workspace: workspace
+    prompt: How many rows in data/records.csv are in the north region?
+    expect_tool: csv_query
+    expect_answer_contains: ["2"]
+  - agent: data
+    workspace: workspace
+    prompt: What is the total of the score column in data/records.csv?
+    expect_tool: csv_query
+    expect_answer_contains: ["208"]

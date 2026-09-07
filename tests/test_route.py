@@ -1,8 +1,20 @@
 import pytest
 
-from root.route import AUTO, choose_agent, is_conversational
+from root.route import AUTO, choose_agent, is_conversational, is_identity_question
 
-AGENTS = {"chat", "calc", "python", "files", "search", "extract", "code", "write", "now"}
+AGENTS = {
+    "chat",
+    "calc",
+    "python",
+    "files",
+    "search",
+    "extract",
+    "code",
+    "write",
+    "now",
+    "pdf",
+    "repo",
+}
 
 # Prompts the rules were written against.
 TUNED = [
@@ -155,3 +167,88 @@ def test_date_arithmetic_is_not_the_clock():
 
 def test_reading_a_file_still_goes_to_files():
     assert choose_agent("What Python version does pyproject.toml require?", AGENTS).agent == "files"
+
+
+def test_a_pdf_question_reaches_the_pdf_agent():
+    for prompt in ("What does report.pdf say?", "summarise the pdf"):
+        assert choose_agent(prompt, AGENTS).agent == "pdf", prompt
+
+
+def test_a_repository_question_reaches_the_repo_agent():
+    for prompt in ("what changed in the working tree?", "show me the last 5 commits"):
+        assert choose_agent(prompt, AGENTS).agent == "repo", prompt
+
+
+WRITING = [
+    "Create a file called notes.txt",
+    "Append the line done to log.txt",
+    "Add a line to log.txt",
+    "Rename log.txt to history.txt",
+    "Move report.pdf into archive",
+    "Delete scratch.txt",
+    "Save the output to results.csv",
+    "make a directory called notes",
+]
+
+READING = [
+    "What Python version does project.toml require?",
+    "Read notes.md and tell me what it says",
+    "Show me lines 1 to 5 of src/model.py",
+    "What does README.md say about evals?",
+]
+
+
+@pytest.mark.parametrize("prompt", WRITING)
+def test_changing_a_file_reaches_the_write_agent(prompt):
+    assert choose_agent(prompt, AGENTS).agent == "write", prompt
+
+
+@pytest.mark.parametrize("prompt", READING)
+def test_reading_a_file_still_reaches_the_files_agent(prompt):
+    assert choose_agent(prompt, AGENTS).agent == "files", prompt
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "What is 5 plus 10?",
+        "Remove the duplicates from [1, 2, 2, 3]",
+        "write python code for binary search",
+    ],
+)
+def test_a_write_verb_without_a_file_does_not_reach_the_write_agent(prompt):
+    assert choose_agent(prompt, AGENTS).agent != "write", prompt
+
+
+IDENTITY = [
+    "who are you?",
+    "who are you",
+    "Who r u",
+    "what are you?",
+    "what's your name?",
+    "what is your name",
+    "who built you?",
+    "who made this?",
+    "what model are you?",
+    "which model is this?",
+    "introduce yourself",
+    "tell me about yourself",
+]
+
+NOT_IDENTITY = [
+    "who wrote the Iliad?",
+    "what model of car is a Corolla?",
+    "what are you going to do with [1,2,3]?",
+    "who is the author of pipeline.py?",
+    "what is 2+2",
+]
+
+
+@pytest.mark.parametrize("prompt", IDENTITY)
+def test_identity_questions_are_recognised(prompt):
+    assert is_identity_question(prompt)
+
+
+@pytest.mark.parametrize("prompt", NOT_IDENTITY)
+def test_other_questions_are_not_identity(prompt):
+    assert not is_identity_question(prompt)

@@ -10,6 +10,7 @@ from root.formats import (
     QWEN_XML,
     THINKING_TAGS,
     detect_format,
+    starts_inside_thinking,
     strip_thinking,
 )
 
@@ -195,3 +196,88 @@ def test_every_format_reads_a_two_argument_call(call_format, text):
 def test_a_positional_two_argument_call_keeps_its_order():
     parsed = LFM2.parse("write_file('a.txt', 'hi')", NAMES)
     assert called(parsed) == ("write_file", ["a.txt", "hi"])
+
+
+def test_a_prompt_that_opens_a_reasoning_block_is_detected():
+    assert starts_inside_thinking("<|im_start|>assistant\n<ifm|think>\n")
+
+
+def test_a_prompt_that_closes_it_again_is_not():
+    assert not starts_inside_thinking("<|im_start|>assistant\n<think>\n\n</think>\n\n")
+
+
+def test_a_prompt_without_reasoning_is_not():
+    assert not starts_inside_thinking("<|im_start|>assistant\n")
+
+
+CALL_SAMPLES = {
+    "lfm2": (LFM2, "calculator(expression='6 * 7')]<|tool_call_end|>"),
+    "qwen-json": (
+        QWEN_JSON,
+        'calculator", "arguments": {"expression": "6 * 7"}}\n</tool_call>',
+    ),
+    "qwen-xml": (
+        QWEN_XML,
+        "calculator>\n<parameter=expression>\n6 * 7\n</parameter>\n</function>\n</tool_call>",
+    ),
+    "ifm": (
+        IFM,
+        "calculator\n<ifm|arg_key>expression</ifm|arg_key>\n"
+        "<ifm|arg_value>6 * 7</ifm|arg_value>\n</ifm|tool_call>\n</ifm|tool_calls>",
+    ),
+}
+SIGNATURES = [("calculator", ("expression",)), ("write_file", ("path", "content"))]
+
+
+@pytest.mark.parametrize("name", list(CALL_SAMPLES))
+def test_every_format_regex_matches_a_real_call(name):
+    call_format, sample = CALL_SAMPLES[name]
+    assert re.compile(call_format.regex(SIGNATURES), re.DOTALL).fullmatch(sample)
+
+
+def test_the_regex_accepts_either_quote_style():
+    """Code holding an apostrophe has to be writable in double quotes; forcing
+    single quotes measurably degrades what the model writes."""
+    pattern = re.compile(LFM2.regex([("run_python", ("code",))]), re.DOTALL)
+    assert pattern.fullmatch("""run_python(code='print(1)')]<|tool_call_end|>""")
+    assert pattern.fullmatch("""run_python(code="print('x')")]<|tool_call_end|>""")
+
+
+def test_the_regex_accepts_an_empty_argument():
+    """today() with no offset means now; forbidding empty makes one up."""
+    pattern = re.compile(LFM2.regex([("today", ("offset",))]), re.DOTALL)
+    assert pattern.fullmatch("today(offset='')]<|tool_call_end|>")
+
+
+def test_the_regex_is_unbounded_rather_than_counted():
+    """A counted repetition unrolls per position and overflows the DFA once
+    several tools are in the alternation, which silently disables the grammar."""
+    assert "{0," not in LFM2.regex(SIGNATURES)
+    assert "{1," not in LFM2.regex(SIGNATURES)
+
+
+def test_a_call_with_no_closing_tag_and_trailing_junk_is_still_read():
+    """Qwen2.5-Coder writes the object, omits </tool_call>, then keeps going.
+    The block match then runs to the end of the text and no longer parses."""
+    text = (
+        '<tool_call> {"name": "dijkstra", "arguments": {"graph": {"nodes": ["A"]}}} '
+        '```json { "name": "dijkstra"'
+    )
+    name, arguments = QWEN_JSON.parse(text, NAMES)
+
+    assert name == "dijkstra"
+    assert dict(arguments)["graph"]
+
+
+def test_a_bare_json_object_is_read_as_a_call():
+    text = '{"name": "run_python", "arguments": {"code": "print(1)"}}'
+    assert QWEN_JSON.parse(text, NAMES) == ("run_python", [("code", "print(1)")])
+
+
+def test_braces_inside_a_string_do_not_confuse_the_scan():
+    text = '{"name": "run_python", "arguments": {"code": "print({\'a\': 1})"}}'
+    assert QWEN_JSON.parse(text, NAMES) == ("run_python", [("code", "print({'a': 1})")])
+
+
+def test_prose_holding_a_brace_is_not_a_call():
+    assert QWEN_JSON.parse("Use a dict like {'a': 1} for that.", NAMES) is None

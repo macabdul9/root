@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import tempfile
 from contextlib import ExitStack
@@ -11,9 +12,38 @@ from pathlib import Path
 
 from .agent import run_agent
 from .backend import LocalModel
-from .config import config_path, load_agents, load_default_model, load_models, resolve_model
-from .evals import SCRATCH, accuracy, load_cases, score_case
+from .config import (
+    PACKAGED_CONFIGS,
+    config_path,
+    load_agents,
+    load_default_model,
+    load_models,
+    resolve_model,
+)
+from .evals import SCRATCH, accuracy, by_agent, load_cases, score_case
 from .tools import build_tools
+
+logger = logging.getLogger(__name__)
+
+
+def case_workspace(name: str | None, evals: Path, fallback: Path) -> Path:
+    """Where a case's workspace lives.
+
+    Relative to the eval file that named it, falling back to the packaged
+    fixture. A local configs/ that holds the YAML but not the fixture would
+    otherwise point every file case at a directory that does not exist, and
+    they would fail as though the model had got it wrong.
+    """
+    if not name:
+        return fallback
+    beside = evals.parent / name
+    if beside.is_dir():
+        return beside
+    packaged = PACKAGED_CONFIGS / name
+    if packaged.is_dir():
+        logger.info("case workspace %s not beside %s; using the packaged one", name, evals)
+        return packaged
+    return beside
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -26,6 +56,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model", default=load_default_model())
     parser.add_argument("--workspace", type=Path, default=Path("."))
     parser.add_argument("--device")
+    parser.add_argument(
+        "--no-grammar", action="store_true", help="do not constrain forced tool calls"
+    )
     parser.add_argument("--agent", help="only run cases for this agent")
     parser.add_argument("--output-dir", type=Path, help="write evals.json here")
     parser.add_argument(
@@ -40,6 +73,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
+    if args.no_grammar:
+        os.environ["ROOT_NO_GRAMMAR"] = "1"
 
     agents = load_agents(config_path("agents.yaml", args.config))
     evals = config_path("evals.yaml", args.evals)
@@ -64,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     # found wherever the command runs from. `tmp` means a fresh empty directory,
     # which is what a case that writes files needs.
     fixed = {
-        name: build_tools(evals.parent / name if name else args.workspace)
+        name: build_tools(case_workspace(name, evals, args.workspace))
         for name in {case.workspace for case in cases}
         if name != SCRATCH
     }
@@ -87,6 +122,17 @@ def main(argv: list[str] | None = None) -> int:
 
     rates = accuracy(scores)
     passed = sum(s.passed for s in scores)
+
+    grouped = by_agent(scores)
+    if len(grouped) > 1:
+        print()
+        for agent, agent_scores in grouped.items():
+            agent_rates = accuracy(agent_scores)
+            hits = sum(s.passed for s in agent_scores)
+            print(
+                f"  {agent:9s} {hits:3d}/{len(agent_scores):<3d} "
+                f"tool {agent_rates['tool']:>4.0%}  answer {agent_rates['answer']:>4.0%}"
+            )
     print(
         f"\n{passed}/{len(scores)} cases passed "
         f"(tool {rates['tool']:.0%}, answer {rates['answer']:.0%})"
@@ -98,6 +144,10 @@ def main(argv: list[str] | None = None) -> int:
             "model": model.model_id,
             "device": model.device,
             "accuracy": rates,
+            "by_agent": {
+                agent: accuracy(agent_scores) | {"cases": len(agent_scores)}
+                for agent, agent_scores in grouped.items()
+            },
             "cases": [
                 {
                     **asdict(score.case),
