@@ -159,7 +159,10 @@ def run_agent(
             on_token(answer)
         return AgentResult(agent=spec.name, prompt=prompt, answer=answer)
     call_format = getattr(model, "call_format", GENERIC)
-    available = {name: tools[name] for name in spec.tools} if tools else {}
+    # A tool the agent names but this session does not have is dropped rather
+    # than fatal: an MCP server that is configured and switched off leaves the
+    # agent with nothing to call, and it should still answer.
+    available = {name: tools[name] for name in spec.tools if name in tools} if tools else {}
     system = compose_system(spec, available, getattr(model, "model_id", "an unknown model"))
     if available:
         system = f"{system}\n{TOOL_NUDGE}"

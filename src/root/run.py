@@ -20,6 +20,7 @@ from .config import (
 )
 from .engines import AUTO as AUTO_ENGINE
 from .engines import ENGINES, EngineUnavailable, load_engine
+from .mcp import MCPTools, declared_tools, describe, load_servers
 from .progress import working
 from .route import AUTO, Route, choose_agent
 from .terminal import Session, start_terminal
@@ -91,6 +92,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--list", action="store_true", help="list configured agents and exit")
     parser.add_argument(
+        "--mcp",
+        action="store_true",
+        help="list MCP servers, the tools they offer, and the ones root skipped, then exit",
+    )
+    parser.add_argument(
         "--init",
         action="store_true",
         help="copy the packaged configs into ./configs for editing, then exit",
@@ -144,7 +150,20 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     tools = build_tools(args.workspace)
-    unknown = {name for spec in agents.values() for name in spec.tools} - set(tools)
+    servers = load_servers()
+    mcp = MCPTools(servers)
+    if args.mcp:
+        try:
+            print(describe(servers, mcp))
+        finally:
+            mcp.close()
+        return 0
+    # Only an enabled server is touched here, and touching it is what spawns it.
+    if mcp.clients:
+        tools |= mcp.tools()
+
+    wanted = {name for spec in agents.values() for name in spec.tools}
+    unknown = wanted - set(tools) - declared_tools(servers)
     if unknown:
         print(f"Agents request unknown tools: {sorted(unknown)}", file=sys.stderr)
         return 1
@@ -190,7 +209,10 @@ def main(argv: list[str] | None = None) -> int:
             engine=args.engine,
             trace=args.trace,
         )
-        return start_terminal(session)
+        try:
+            return start_terminal(session)
+        finally:
+            mcp.close()
 
     route = choose_agent(prompt, set(agents)) if args.agent == AUTO else Route(args.agent, None)
     spec = agents[route.agent]
@@ -248,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
         (args.output_dir / "result.json").write_text(
             json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+    mcp.close()
     return 0
 
 

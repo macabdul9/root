@@ -159,7 +159,7 @@ def run_command(session: Session, line: str) -> str:
     if name == "tools":
         if session.agent == AUTO:
             return "auto picks an agent per prompt; /routes shows the rules"
-        used = [session.tools[t] for t in session.spec.tools]
+        used = [session.tools[t] for t in session.spec.tools if t in session.tools]
         if not used:
             return f"{session.agent} answers without tools"
         return "\n".join(f"{t.name}({t.parameter}) - {t.description}" for t in used)

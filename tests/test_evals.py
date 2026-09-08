@@ -127,6 +127,7 @@ def test_init_copies_the_packaged_configs(tmp_path):
     assert {path.name for path in written} == {
         "agents.yaml",
         "evals.yaml",
+        "mcp.yaml",
         "models.yaml",
         "workspace",
     }
