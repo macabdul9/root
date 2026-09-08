@@ -14,6 +14,7 @@ AGENTS = {
     "now",
     "pdf",
     "repo",
+    "shell",
 }
 
 # Prompts the rules were written against.

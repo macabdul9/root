@@ -1,0 +1,15 @@
+# Only the files needed to build and test the image enter the build context.
+*
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!src/**
+!tests/
+!tests/**
+!containers/
+!containers/test.sh
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/

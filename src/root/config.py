@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 import shutil
 from dataclasses import dataclass, fields
@@ -7,6 +8,8 @@ from pathlib import Path
 
 import requests
 import yaml
+
+logger = logging.getLogger(__name__)
 
 # Used only when models.yaml is missing or names an alias it does not define.
 FALLBACK_MODEL = "LiquidAI/LFM2.5-350M"
@@ -26,7 +29,13 @@ def config_path(name: str, override: Path | None = None) -> Path:
     if override is not None:
         return override
     local = LOCAL_CONFIGS / name
-    return local if local.is_file() else PACKAGED_CONFIGS / name
+    if not local.is_file():
+        return PACKAGED_CONFIGS / name
+    # Worth saying out loud. A local copy that has drifted from the packaged
+    # one silently changed an eval result twice while it looked like a model
+    # regression, and nothing pointed at the file being read.
+    logger.warning("using %s, which shadows the packaged %s", local, name)
+    return local
 
 
 @dataclass(frozen=True, slots=True)

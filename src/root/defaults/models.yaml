@@ -1,3 +1,11 @@
+# Models the /model command offers. A note saying "no tool calls in its
+# template" means the model resolves to the generic format: the toolless agents
+# (chat, code, extract) work, and a tool call cannot be forced. Gated models
+# need `hf auth login` or HF_TOKEN before they will download.
+#
+# Everything here is under the 1B ceiling root enforces in process.
+# openbmb/MiniCPM5-1B is 1,080,632,832 parameters and is refused.
+#
 # Models the /model command offers. Any Hugging Face id works with --model or
 # /model, whether or not it is listed here; these are the ones that have been
 # run against the eval set.
@@ -16,6 +24,18 @@ models:
   qwen35-08b:
     id: Qwen/Qwen3.5-0.8B
     note: 800M, XML tool calls
+  qwen2.5-coder-0.5b:
+    id: Qwen/Qwen2.5-Coder-0.5B-Instruct
+    note: 494M, tuned for code, JSON tool calls
+  qwen2.5-coder-0.5b-base:
+    id: Qwen/Qwen2.5-Coder-0.5B
+    note: 494M, base model, JSON tool calls
+  gemma-3-270m:
+    id: google/gemma-3-270m-it
+    note: 268M, gated, no tool calls in its template
+  gemma-3-1b:
+    id: google/gemma-3-1b-it
+    note: 1.00B, gated, no tool calls in its template
   k2-horizon-09b:
     id: IFM/K2-Horizon-0.9B
     note: 900M, runs code from its own repo

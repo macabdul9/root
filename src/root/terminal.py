@@ -117,25 +117,32 @@ class Session:
         del self.history[: max(0, len(self.history) - HISTORY_TURNS * 2)]
 
 
+# A command and its plural differ by one letter and mean different things, so
+# `/agents python` used to list the agents and quietly drop the argument. Both
+# spellings now work either way: with a name they switch, without one they list.
+SYNONYMS = {"agents": "agent", "models": "model", "tool": "tools", "route": "routes"}
+
+
 def run_command(session: Session, line: str) -> str:
     name, _, argument = line[1:].partition(" ")
     argument = argument.strip()
+    name = SYNONYMS.get(name, name) if argument or name in {"models", "tool", "route"} else name
 
     if name in {"quit", "exit", "q"}:
         session.running = False
         return ""
     if name == "help":
         return HELP
-    if name == "agents":
+    if name == "agents" or (name == "agent" and not argument):
         rows = [f"{'*' if session.agent == AUTO else ' '} {AUTO:9s} route by the prompt"]
         rows += [
             f"{'*' if key == session.agent else ' '} {key:9s} {list(spec.tools) or '-'}"
             for key, spec in session.agents.items()
         ]
+        rows.append("")
+        rows.append("switch with /agent NAME")
         return "\n".join(rows)
     if name == "agent":
-        if not argument:
-            return f"{run_command(session, '/agents')}\n\nswitch with /agent NAME"
         if argument != AUTO and argument not in session.agents:
             return f"unknown agent {argument!r}; try {[AUTO, *sorted(session.agents)]}"
         session.agent = argument

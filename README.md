@@ -65,6 +65,12 @@ scripts/evaluate.sh          # the eval suite, into runs/
 `install.sh` run from inside a checkout installs that working tree instead of fetching from
 GitHub, which is the quick way to try a local change as an installed command.
 
+To build once and run or test on other machines with Docker or Apptainer, see
+[the container guide](docs/containers.md). The image includes the locked runtime,
+grammar support, and test tools, and defaults to NVIDIA GPU inference with CUDA.
+On an HPC machine with only Apptainer, build directly from the checkout with
+`apptainer build --fakeroot root.sif containers/root.def`; Docker is not required.
+
 ## Configuration
 
 `root` reads `agents.yaml`, `models.yaml` and `evals.yaml` in that order of preference:
@@ -105,8 +111,7 @@ but the model then narrates the tool result wrongly, calling 296 the answer to `
 
 | Command | Effect |
 | --- | --- |
-| `/agents` | List configured agents, marking the current one |
-| `/agent NAME` | Switch agent, clearing the conversation (`auto` to route) |
+| `/agent`, `/agents` | With a name, switch agent, clearing the conversation (`auto` to route); without one, list them |
 | `/tools` | Show what the current agent may call |
 | `/routes` | Show the rules `auto` uses to pick an agent |
 | `/agent`, `/model`, `/trace` | With no argument, list the options and how to set them |
@@ -667,6 +672,7 @@ generation settings. Adding one is a config change, not a code change.
 | `files` | read_file, read_lines, list_files | Questions about files in the workspace |
 | `pdf` | read_pdf, list_files | Questions about PDF documents |
 | `repo` | git, list_files | Questions about the git repository |
+| `shell` | run_bash, list_files | One shell command, for what no tool covers |
 | `write` | write_file, append_file, move_file, delete_file, make_directory, list_files | Creating and organising files |
 | `search` | grep, read_file | Finding where something is defined or used |
 | `extract` | none | Text to a fixed JSON object |
@@ -686,6 +692,7 @@ generation settings. Adding one is a config change, not a code change.
 | `move_file` | source, destination | Renames or moves, refusing to overwrite |
 | `delete_file` | path | Removes one file, never a directory |
 | `make_directory` | path | Creates a directory and its parents |
+| `run_bash` | command | Whatever a shell command printed |
 | `git` | command | One read-only git subcommand, allowlisted |
 | `list_files` | glob or directory | Matching workspace paths |
 | `grep` | pattern or regex | `path:line: text` for each match, capped at 30 |
@@ -715,6 +722,14 @@ counting exactly, the way `calculator` already does the arithmetic.
 That is isolation, not a sandbox: the program runs as you, in the workspace directory, with
 network access. Give the `python` agent a workspace you would hand to a stranger, or drop
 the tool from the agent's list.
+
+`run_bash` has the same standing and the same warning, plus a refusal list. It will not run
+anything matching `sudo`, an `rm` reaching outside the workspace, `mkfs`/`dd`/`shutdown`, a
+download piped into a shell, `git push` or `reset --hard`, a fork bomb, or `crontab`. That
+list is not a security boundary — a shell has a thousand ways around a pattern — but the
+accidents a small model actually has are ordinary, and these are them. Anything genuinely
+untrusted wants a container, not a regular expression. If you would rather not have a shell
+at all, remove `run_bash` from the `shell` agent in `agents.yaml` and it is gone.
 
 ## How the loop works
 

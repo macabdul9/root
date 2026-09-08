@@ -233,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
         print(flush=True)
     else:
         print(result.answer, flush=True)
-    if args.trace != "off":
+    if args.trace != "off" and not result.from_template:
         print(render_summary(result, len(spec.tools)), file=sys.stderr)
 
     if args.output_dir:

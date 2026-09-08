@@ -53,6 +53,9 @@ class AgentResult:
     steps: list[Step] = field(default_factory=list)
     messages: list[dict[str, str]] = field(default_factory=list)
     hit_step_limit: bool = False
+    # Answered without asking the model, so there is no timing, no token count
+    # and no advice about agents to give.
+    from_template: bool = False
 
     @property
     def calls(self) -> list[ToolCall]:
@@ -157,7 +160,7 @@ def run_agent(
         answer = describe(getattr(model, "model_id", "an unknown model"), tools or {}, agents or {})
         if on_token:
             on_token(answer)
-        return AgentResult(agent=spec.name, prompt=prompt, answer=answer)
+        return AgentResult(agent=spec.name, prompt=prompt, answer=answer, from_template=True)
     call_format = getattr(model, "call_format", GENERIC)
     available = {name: tools[name] for name in spec.tools} if tools else {}
     system = compose_system(spec, available, getattr(model, "model_id", "an unknown model"))

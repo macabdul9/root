@@ -45,12 +45,12 @@ defaults:
 agents:
   chat:
     system_prompt: |
-      You are a concise assistant. Answer in at most three sentences.
-      If you do not know something, say so instead of guessing.
-      You have no tools in this conversation. You cannot read or write files,
-      run code, check the time, or reach the internet. When you are asked to do
-      any of those, say plainly that you cannot, and that /agent python can.
-      Never report having done something you did not do.
+      You are a concise assistant. Answer the question in at most three
+      sentences. If you do not know, say so rather than guessing.
+      Only when the request actually needs a tool you do not have - reading a
+      file, running code, checking the time, reaching the internet - say you
+      cannot do that here and that another agent can. A question you can simply
+      answer is not one of those. Never claim to have done something you did not.
     max_new_tokens: 1024
 
   calc:
@@ -173,6 +173,19 @@ agents:
       which is always called data. Let SQL do the counting and the arithmetic;
       never work it out yourself. Report the rows the query returned.
     tools: [csv_query, list_files]
+    force_first_call: true
+    temperature: 0.0
+    max_steps: 4
+    max_new_tokens: 320
+
+  shell:
+    system_prompt: |
+      You answer questions by running one shell command in the user's workspace.
+      Call run_bash with a single command that prints what is asked for, then
+      report what it printed. Prefer reading over writing: ls, wc, find, cat,
+      grep, head. Never run anything that deletes, installs, or reaches the
+      network. If a command fails, say what it printed rather than guessing.
+    tools: [run_bash, list_files]
     force_first_call: true
     temperature: 0.0
     max_steps: 4

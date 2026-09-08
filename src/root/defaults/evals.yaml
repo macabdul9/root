@@ -550,3 +550,19 @@ cases:
     prompt: What is the total of the score column in data/records.csv?
     expect_tool: csv_query
     expect_answer_contains: ["208"]
+
+  # --- shell: one command, read-only in practice --------------------------
+  - agent: shell
+    workspace: workspace
+    prompt: How many lines are in pipeline.py? Use a shell command.
+    expect_tool: run_bash
+    expect_answer_contains: ["7"]
+  - agent: shell
+    workspace: workspace
+    prompt: Run a shell command to list the files in the scripts directory.
+    expect_tool: run_bash
+    expect_answer_contains: ["run_pipeline.sh"]
+  - agent: shell
+    workspace: workspace
+    prompt: Use a shell command to count how many .py files are here.
+    expect_tool: run_bash

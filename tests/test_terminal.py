@@ -329,3 +329,24 @@ def test_a_pinned_agent_is_flagged_when_auto_would_differ(session):
 
     assert elsewhere.matched
     assert elsewhere.agent != session.agent
+
+
+@pytest.mark.parametrize("line", ["/agent calc", "/agents calc"])
+def test_either_spelling_switches_the_agent(line, session):
+    """`/agents python` listed the agents and quietly dropped the argument."""
+    assert run_command(session, line) == "agent: calc"
+    assert session.agent == "calc"
+
+
+@pytest.mark.parametrize("line", ["/agent", "/agents"])
+def test_either_spelling_lists_when_given_no_name(line, session):
+    listing = run_command(session, line)
+    assert "* chat" in listing
+    assert listing.endswith("switch with /agent NAME")
+    assert session.agent == "chat"
+
+
+@pytest.mark.parametrize("line", ["/models", "/tool", "/route"])
+def test_the_other_near_misses_resolve(line, session):
+    session.model = SimpleNamespace(model_id="a/b")
+    assert not run_command(session, line).startswith("unknown command")

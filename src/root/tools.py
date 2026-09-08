@@ -21,6 +21,24 @@ MAX_GREP_MATCHES = 30
 MAX_PDF_PAGES = 20
 GIT_SUBCOMMANDS = frozenset({"status", "log", "diff", "branch", "show", "remote", "blame"})
 GIT_TIMEOUT_SECONDS = 15
+BASH_TIMEOUT_SECONDS = 30
+
+# Refused outright. Not a security boundary - a shell has a thousand ways round
+# a pattern list - but the accidents a small model actually has are ordinary
+# and worth catching: it reaches for sudo, wipes a home directory, force-pushes,
+# or pipes the internet into a shell.
+BASH_REFUSED = (
+    (r"\bsudo\b|\bsu\b\s", "runs as another user"),
+    (r"\brm\s+(-[a-z]*[rf][a-z]*\s+)*(/|~|\$HOME|\.\.)", "deletes outside the workspace"),
+    (r"\b(mkfs|fdisk|diskutil|shutdown|reboot|halt|killall)\b", "acts on the machine"),
+    (r"\bdd\b.*\bof=", "writes a raw device"),
+    (r">\s*/dev/(?!null)", "writes a device file"),
+    (r"\bchmod\b.*\b777\b|\bchown\b.*\s/", "changes ownership outside the workspace"),
+    (r"\b(curl|wget)\b[^|]*\|\s*(ba)?sh", "pipes a download into a shell"),
+    (r"\bgit\b.*\b(push|reset\s+--hard|clean\s+-[a-z]*f)", "rewrites the repository"),
+    (r":\s*\(\s*\)\s*\{.*\|.*&\s*\}", "is a fork bomb"),
+    (r"\bcrontab\b|\blaunchctl\b|\bsystemctl\b", "changes what runs later"),
+)
 MAX_GREP_FILE_BYTES = 1_000_000
 PYTHON_TIMEOUT_SECONDS = 10
 
@@ -380,6 +398,39 @@ def build_tools(workspace: Path) -> dict[str, Tool]:
         target.unlink()
         return f"deleted {target.relative_to(workspace)}"
 
+    def run_bash(command: str) -> str:
+        """Run a shell command in the workspace and return what it printed.
+
+        The same standing as run_python: a child process, a timeout, and the
+        workspace as its working directory. It is not a sandbox. The refusal
+        list above catches the destructive one-liners a confused model reaches
+        for, not a determined one.
+        """
+        command = command.strip()
+        if not command:
+            raise ValueError("empty command")
+        for pattern, reason in BASH_REFUSED:
+            if re.search(pattern, command, re.IGNORECASE):
+                raise ValueError(f"refused: this {reason}")
+
+        try:
+            completed = subprocess.run(
+                ["bash", "-c", command],
+                cwd=workspace,
+                capture_output=True,
+                text=True,
+                timeout=BASH_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            raise TimeoutError(f"command did not finish in {BASH_TIMEOUT_SECONDS}s") from None
+
+        output = (completed.stdout + completed.stderr).strip()
+        if len(output) > MAX_TOOL_OUTPUT_CHARS:
+            output = output[:MAX_TOOL_OUTPUT_CHARS] + "\n[truncated]"
+        if completed.returncode != 0:
+            return f"error: exit {completed.returncode}\n{output}"
+        return output or "exit 0, no output"
+
     def git(command: str) -> str:
         """Run one read-only git command in the workspace.
 
@@ -655,6 +706,18 @@ def build_tools(workspace: Path) -> dict[str, Tool]:
                 ),
             ),
             run=delete_file,
+        ),
+        "run_bash": Tool(
+            name="run_bash",
+            description="Run a shell command in the workspace and return its output.",
+            parameters=(
+                Parameter(
+                    "command",
+                    "A shell command, such as wc -l *.py or ls -la src.",
+                    freeform=True,
+                ),
+            ),
+            run=run_bash,
         ),
         "git": Tool(
             name="git",

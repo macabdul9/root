@@ -17,6 +17,11 @@ build/
 # Per-run output from scripts/run_agent.sh and scripts/evaluate.sh
 runs/
 
+# Container workspaces and exported images
+container-work/
+*.sif
+root-*.tar
+
 # Local config, written by `root --init` and by `/model add`. The packaged
 # copies in src/root/defaults are the source of truth for this repo, and a
 # local directory holding only the YAML shadows them without the eval fixture.
@@ -250,3 +255,4 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+llms.txt

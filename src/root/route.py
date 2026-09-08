@@ -65,6 +65,13 @@ RULES: tuple[tuple[str, str, str], ...] = (
         "write",
     ),
     (
+        "shell",
+        r"\b(run|execute)\b.{0,15}\b(command|shell|bash|terminal)\b"
+        r"|\b(bash|shell) command\b"
+        r"|\b(ls|wc|du|df|chmod|tar|curl|ps|kill)\b\s+-",
+        "shell",
+    ),
+    (
         "tabular",
         r"\b[\w./-]+\.csv\b|\b(csv|spreadsheet|rows?|columns?)\b",
         "data",
