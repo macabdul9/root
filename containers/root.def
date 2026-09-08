@@ -20,7 +20,8 @@ Stage: root
 %post -c /bin/bash
     set -euo pipefail
     apt-get update
-    apt-get install -y --no-install-recommends bash ca-certificates git libgomp1
+    # Triton compiles its CUDA driver helper during the first GPU inference.
+    apt-get install -y --no-install-recommends bash build-essential ca-certificates git libgomp1
     rm -rf /var/lib/apt/lists/*
 
     export UV_PROJECT_ENVIRONMENT=/opt/venv
@@ -41,6 +42,7 @@ Stage: root
 %test
     #!/bin/bash
     set -euo pipefail
+    cc --version
     /opt/venv/bin/root --version
     export PATH="/opt/venv/bin:$PATH"
     root-container-test

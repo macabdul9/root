@@ -37,6 +37,38 @@ host drivers, vLLM, SGLang, Ollama, or ROCm.
 
 ## Build and develop using only Apptainer
 
+The shared script also manages a named development container for either runtime.
+Run these commands from the **host shell**, inside your GPU allocation:
+
+```bash
+bash scripts/container.sh start
+bash scripts/container.sh list
+bash scripts/container.sh shell
+```
+
+Inside that shell, run `root --engine transformers --device cuda`. Type `exit`
+to return to the host, then stop the named container:
+
+```bash
+bash scripts/container.sh stop
+```
+
+`start` builds if needed, tests, and starts an idle container named `root-dev`.
+`shell` attaches to that existing container. Set `ROOT_CONTAINER_NAME` to choose
+a different name. Use the same `ROOT_CONTAINER_RUNTIME` selection for each command
+if overriding detection. For an existing compiler-enabled image, set
+`export ROOT_SIF="$PWD/root-compiler.sif"` before `start`.
+Docker containers are removed when stopped; the image, mounted checkout, and
+cache remain. Apptainer instances last only as long as the host/job permits.
+No container runtime or daemon is launched inside the image.
+
+The script mounts the cache at creation time and explicitly sets Hugging Face,
+XDG, and Triton cache paths under that writable mount. A bare `apptainer shell`
+or `instance start` without those mounts can fail on a read-only SIF. Existing
+instances must be stopped and recreated through the script to receive the mounts.
+The reported read-only `/work` error needs a full `root -v` traceback to identify
+which cache or setting selected that particular path.
+
 The shared launcher detects Apptainer or Docker and prefers Apptainer when both
 are installed. Set `ROOT_CONTAINER_RUNTIME=apptainer` or
 `ROOT_CONTAINER_RUNTIME=docker` to select explicitly.
@@ -445,6 +477,12 @@ its installed environment is read-only.
 
 ## Troubleshooting and verification status
 
+- Triton fails in `_find_compiler` during the first GPU prompt: the image needs
+  a C compiler and development headers at runtime, even with prebuilt PyTorch
+  wheels. Both recipes now retain `build-essential` for this purpose and check
+  `cc` during image tests. Rebuild with a new image name, for example
+  `ROOT_SIF=root-compiler.sif bash scripts/container.sh`; the launcher otherwise
+  reuses the old SIF. See [Triton's runtime compiler code](https://github.com/triton-lang/triton/blob/main/python/triton/runtime/build.py).
 - `libfakeroot.so` reports `GLIBC_2.38 not found`: the host's fakeroot library
   requires a newer glibc than the old Bookworm base provides. Both recipes now
   use `python:3.12-slim-trixie` (glibc 2.41). Update the recipe and rebuild.
@@ -465,11 +503,11 @@ its installed environment is read-only.
   the container. Pass `--engine-url` with a reachable server address and select
   the engine explicitly. This image contains the client, not those servers.
 
-Docker and Apptainer were unavailable on the development machine when this recipe
-was added. The recipe therefore still needs its first actual image build and
-NVIDIA GPU smoke run on a host with a container runtime. The build-time test step
-and commands above are the acceptance checks; an image tag alone does not prove
-GPU or model accuracy compatibility.
+An ARM64 HPC host successfully built the Trixie Apptainer image and passed all
+352 unit tests. Its first GPU inference exposed the missing compiler dependency
+addressed above. The updated image still needs a GPU inference run on that host;
+Docker and Apptainer are unavailable on the local development machine. The
+build-time tests do not establish GPU or model accuracy compatibility.
 
 Reference behavior: [uv Docker integration](https://docs.astral.sh/uv/guides/integration/docker/),
 [Docker platform builds](https://docs.docker.com/build/building/multi-platform/),

@@ -7,7 +7,7 @@ FROM python:3.12-slim-trixie
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends bash ca-certificates git libgomp1 \
+    && apt-get install -y --no-install-recommends bash build-essential ca-certificates git libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=uv /uv /usr/local/bin/uv
 
@@ -35,6 +35,6 @@ RUN chmod 755 /usr/local/bin/root-container-test \
     && chmod 1777 /workspace /cache /cache/huggingface
 
 USER rootapp
-RUN root --version && root-container-test
+RUN cc --version && root --version && root-container-test
 WORKDIR /workspace
 CMD ["root", "--engine", "transformers", "--device", "cuda"]
