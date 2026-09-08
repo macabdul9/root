@@ -37,6 +37,33 @@ host drivers, vLLM, SGLang, Ollama, or ROCm.
 
 ## Build and develop using only Apptainer
 
+The shared launcher detects Apptainer or Docker and prefers Apptainer when both
+are installed. Set `ROOT_CONTAINER_RUNTIME=apptainer` or
+`ROOT_CONTAINER_RUNTIME=docker` to select explicitly.
+
+For a single command that builds the image if missing, tests it, and starts the
+NVIDIA GPU terminal, run inside your GPU allocation:
+
+```bash
+./scripts/container.sh
+```
+
+You can also pass a prompt or root CLI options:
+
+```bash
+./scripts/container.sh --agent calc "What is 17 times 23, plus 4?"
+```
+
+The script uses the checkout as `/workspace` and reuses your host `HF_HOME`, or
+`${XDG_CACHE_HOME:-$HOME/.cache}/huggingface` when `HF_HOME` is unset. It creates no
+separate workspace or checkout-local model cache. An existing `root.sif` is reused;
+its installed source snapshot is what runs. After changing source or dependencies,
+use `ROOT_SIF=root-next.sif ./scripts/container.sh` to build a new snapshot, or use
+the source-mount development commands below. The script preserves the scheduler's
+`CUDA_VISIBLE_DEVICES` assignment. For sites that require building outside GPU
+allocations, build separately first using the command below, then run the script
+inside your allocation.
+
 From the repository root on the HPC machine:
 
 ```bash
@@ -146,6 +173,25 @@ build recipes, not byte-identical images; transfer a specific SIF when you need
 the exact same built environment on another compatible machine.
 
 ## Build and test with Docker
+
+For the same build/test/run workflow as `scripts/container.sh`, use:
+
+```bash
+ROOT_CONTAINER_RUNTIME=docker ./scripts/container.sh
+ROOT_CONTAINER_RUNTIME=docker ./scripts/container.sh --agent calc "What is 17 times 23, plus 4?"
+```
+
+The Docker daemon must be running and configured with NVIDIA Container Toolkit.
+The script builds `root:local` if absent, runs the offline unit suite, and starts
+CUDA inference. It mounts the checkout as `/workspace` and reuses host `HF_HOME`,
+or `${XDG_CACHE_HOME:-$HOME/.cache}/huggingface`. Output files belong to your host
+UID/GID, and prompts and root CLI options are forwarded unchanged.
+
+Set `ROOT_DOCKER_IMAGE=root:next ROOT_CONTAINER_RUNTIME=docker ./scripts/container.sh` to build a fresh source
+snapshot under a new tag after edits. Existing tags are reused, not rebuilt
+automatically. `ROOT_DOCKER_GPUS` defaults to `all`; set it to a Docker GPU request
+such as `device=0` to restrict devices. On managed systems, use only GPUs assigned
+to you; Docker GPU selection is separate from the Apptainer scheduler forwarding.
 
 Build for the current machine:
 

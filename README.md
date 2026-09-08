@@ -70,6 +70,12 @@ To build once and run or test on other machines with Docker or Apptainer, see
 grammar support, and test tools, and defaults to NVIDIA GPU inference with CUDA.
 On an HPC machine with only Apptainer, build directly from the checkout with
 `apptainer build --fakeroot root.sif containers/root.def`; Docker is not required.
+Run `./scripts/container.sh` to build if needed, test, and start the NVIDIA GPU
+terminal using this checkout as the workspace and your existing Hugging Face
+cache. It detects Apptainer or Docker, preferring Apptainer when both are installed.
+Set `ROOT_CONTAINER_RUNTIME=docker` or `ROOT_CONTAINER_RUNTIME=apptainer` to choose
+explicitly. Docker needs NVIDIA Container Toolkit configured; on HPC, run inside
+your GPU allocation.
 
 ## Configuration
 
