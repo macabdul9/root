@@ -63,7 +63,7 @@ if [[ "$runtime" == apptainer ]]; then
     fi
     apptainer test --cleanenv "$image"
 
-    launch=(run)
+    launch=(run --pwd /workspace)
     target=("$image" "$@")
     if [[ "$action" == start ]]; then
         launch=(instance start)
@@ -73,7 +73,6 @@ if [[ "$runtime" == apptainer ]]; then
         --bind "$repo_dir:/workspace" \
         --bind "$cache_dir:/cache/huggingface" \
         "${cache_env[@]}" \
-        --pwd /workspace \
         "${target[@]}"
 fi
 
