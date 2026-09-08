@@ -445,6 +445,12 @@ its installed environment is read-only.
 
 ## Troubleshooting and verification status
 
+- `libfakeroot.so` reports `GLIBC_2.38 not found`: the host's fakeroot library
+  requires a newer glibc than the old Bookworm base provides. Both recipes now
+  use `python:3.12-slim-trixie` (glibc 2.41). Update the recipe and rebuild.
+  This addresses the reported symbol mismatch; the build still needs to pass on
+  your host. See [Apptainer's explanation of host fakeroot library compatibility](https://apptainer.org/docs/user/latest/fakeroot.html)
+  and [Debian's Trixie libc package](https://packages.debian.org/stable/libc6).
 - Build says the lock is stale: run `uv lock` in the checkout, review the update,
   and rebuild. Do not remove `--locked` to hide dependency drift.
 - CUDA is unavailable: check the host driver, scheduler allocation, device
