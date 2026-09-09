@@ -265,11 +265,12 @@ def switch_model(session: Session, argument: str) -> str:
     current = getattr(session.model, "model_id", "")
     if not argument:
         rows = []
+        width = max(len(name) for name in [*session.models, "(unlisted)"])
         for alias, choice in session.models.items():
             mark = "*" if choice.id == current else " "
-            rows.append(f"{mark} {alias:15s} {choice.id:24s} {choice.note}")
+            rows.append(f"{mark} {alias:{width}s}  {choice.note}")
         if current not in {choice.id for choice in session.models.values()}:
-            rows.append(f"* {'(unlisted)':15s} {current}")
+            rows.append(f"* {'(unlisted)':{width}s}  {current}")
         rows.append("")
         rows.append("load one with /model ALIAS, or /model any/huggingface-id")
         rows.append("register a new one with /model add ORG/NAME")

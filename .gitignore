@@ -17,6 +17,9 @@ build/
 # Per-run output from scripts/run_agent.sh and scripts/evaluate.sh
 runs/
 
+# Punkt, if nltk's writable-path search lands in the checkout rather than $HOME
+nltk_data/
+
 # Container workspaces and exported images
 container-work/
 *.sif

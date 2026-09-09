@@ -145,11 +145,13 @@ different model.
 
 ```
 root> /model
-* lfm2-350m       LiquidAI/LFM2.5-350M     350M, the default
-  lfm2-230m       LiquidAI/LFM2.5-230M     230M, the smallest
-  qwen3-06b       Qwen/Qwen3-0.6B          600M, JSON tool calls
-  qwen35-08b      Qwen/Qwen3.5-0.8B        800M, XML tool calls
-  k2-horizon-09b  IFM/K2-Horizon-0.9B      900M, runs code from its own repo
+* lfm2-350m                350M, the default
+  lfm2-230m                230M, the smallest
+  qwen3-06b                600M, JSON tool calls
+  qwen35-08b               800M, XML tool calls
+  k2-horizon-09b           900M, runs code from its own repo
+  qwen3-coder-30b-a3b      30.5B MoE, tuned for code, XML tool calls, served engine only
+  glm-4.7-flash            31.2B MoE, GLM tool calls, served engine only
 root> /model qwen3-06b
 model: Qwen/Qwen3-0.6B · tool calls: qwen-json
 ```
@@ -275,7 +277,7 @@ line disables the model rather than silently running the code.
 
 ## Tool-call formats
 
-The five models write tool calls four different ways, so `formats.py` holds one `CallFormat`
+The listed models write tool calls five different ways, so `formats.py` holds one `CallFormat`
 per family and `detect_format` picks between them by looking for a marker in the model's own
 chat template. Reading the template beats a per-model table: a model this project has never
 heard of still works if it writes calls like one it has.
@@ -286,7 +288,13 @@ heard of still works if it writes calls like one it has.
 | `qwen-json` | `<tool_call>{"name": "calculator", "arguments": {...}}</tool_call>` |
 | `qwen-xml` | `<tool_call><function=calculator><parameter=expression>6 * 7</parameter>...` |
 | `ifm` | `<ifm\|tool_calls><ifm\|tool_call>{"name": ...}</ifm\|tool_call>...` |
+| `glm` | `<tool_call>calculator<arg_key>expression</arg_key><arg_value>6 * 7</arg_value>...` |
 | `generic` | A bare `calculator('6 * 7')` line, with no way to force a call |
+
+Order matters in `KNOWN`: `qwen-json` is tried last, because every other `<tool_call>`
+template contains its marker too, and only the extra `<function=` or `<arg_key>` tells them
+apart. GLM is also the one format whose marker is not in its prefill - a forced turn opens
+`<tool_call>`, and `<arg_key>` only appears once the model has written the tool's name.
 
 Each format declares the markers its parser needs in `keep`. That matters because decoding
 strips control tokens: K2-Horizon writes arguments inside `<ifm|arg_value>` tags, which live
@@ -789,7 +797,86 @@ Cases that search or read files point at `tests/fixtures/workspace` through a pe
 `workspace:` key, so their answers do not shift when this repository changes.
 
 Current score on `LFM2.5-350M`: **97/114 cases, tool choice 97%, answer content 88%**. See
-[Eval findings](#eval-findings) for every model and what the numbers showed.
+[Eval findings](#eval-findings) for every model and what the numbers showed, and
+[Instruction following](#instruction-following) for the two published benchmarks, which score
+the model rather than the agents.
+
+## Instruction following
+
+`root-eval` scores the agents this repository ships. Two published benchmarks score the
+model itself, on plain instruction following with no tools involved:
+
+```bash
+scripts/instruct_eval.sh                          # every sub-1B model, all GPUs listed in GPUS
+GPUS=1,2,3 scripts/instruct_eval.sh lfm2-350m     # one model, three cards
+uv run root-instruct --limit 8 --skip-judge       # a smoke run with no judge
+```
+
+[IFEval](https://huggingface.co/datasets/google/IFEval) (541 prompts, 25 constraint types)
+asks for things a program can check: no commas, at least 300 words, end with this exact
+phrase, answer in Kannada. `ifeval.py` holds one verifier per constraint and reports the
+four numbers the benchmark is published with - prompt level and instruction level, each
+strict and loose. Loose forgives a "Sure, here it is" preamble, a trailing offer of more
+help, and emphasis wrapped round the whole answer, since a model that followed the
+instruction and then framed it has still followed the instruction.
+
+[InFoBench](https://huggingface.co/datasets/kqsong/InFoBench) (500 instructions decomposed
+into 2,250 yes/no requirements) cannot be checked by a program, so a judge model answers
+each requirement and the score is the fraction answered yes. The judge never generates more
+than one token: the verdict is read from the probability it puts on `Yes` against the
+probability it puts on `No`, which both batches into a single forward pass and avoids
+parsing an answer out of a model that opens with "Based on the".
+
+Both passes are checkpointed a case at a time, so a run that dies resumes without
+regenerating, and `--report-only` rescores what is on disk after a verifier changes. That
+separation is what made validating the verifiers cheap: they are written from the papers'
+described semantics rather than vendored from either project, then checked against Google's
+released implementation on 5,004 real verdicts. **24 of the 25 verifiers agree exactly, and
+the whole set agrees on 99.86%.** Three disagreements found that way were bugs here and are
+fixed: the two case checks also require the response to be English, and `forbidden_words`
+matches whole words, so forbidding "can" does not fail a response for "cannot".
+
+The one remaining divergence is deliberate. `keywords:letter_frequency` accepts only a-z in
+the reference, which substitutes a *random* letter for anything else - making its verdict on
+the two prompts that ask about `!` and `#` arbitrary and unrepeatable. root counts the
+character the prompt asked for.
+
+### Results
+
+Every sub-1B model in `models.yaml`, greedy, 1024 new tokens, one run. 6,246 responses,
+5,004 IFEval verdicts and 3,000 judged instructions covering 13,500 decomposed requirements.
+
+| Model | IFEval prompt-strict | prompt-loose | inst-strict | InFoBench DRFR | easy | hard |
+| --- | --- | --- | --- | --- | --- | --- |
+| `LiquidAI/LFM2.5-350M` (default) | **71.2%** | 73.6% | **80.2%** | 44.3% | 47.8% | 42.7% |
+| `LiquidAI/LFM2.5-230M` | 66.2% | 69.3% | 75.8% | 38.8% | 42.5% | 37.1% |
+| `Qwen/Qwen3-0.6B` | 57.5% | 61.9% | 67.7% | **46.7%** | 50.3% | 45.1% |
+| `Qwen/Qwen3.5-0.8B` | 52.3% | 56.4% | 63.1% | 44.5% | 50.0% | 42.1% |
+| `Qwen/Qwen2.5-Coder-0.5B-Instruct` | 26.4% | 28.3% | 37.6% | 26.2% | 33.0% | 23.2% |
+| `Qwen/Qwen2.5-Coder-0.5B` (base) | 15.9% | 19.2% | 28.5% | 16.3% | 15.5% | 16.7% |
+
+The two benchmarks disagree about who wins, and that is the interesting part. LFM2.5-350M
+leads IFEval by 14 points over Qwen3-0.6B and *loses* InFoBench to it. IFEval asks whether
+the output has the demanded shape; InFoBench asks whether it does what was wanted. A model
+tuned hard on format compliance tops the first and not the second, so quoting either number
+alone will mislead you about the same pair of models.
+
+The rest reads as expected. Loose beats strict by two to four points everywhere, which is the
+cost of a "Sure, here it is" preamble. InFoBench's hard split is five to ten points below its
+easy split for every model. The two code-tuned entries are far below the general models on
+both, and the base checkpoint sits near the floor: with no instruction tuning it repeats a
+single phrase until the token budget runs out, so it is a floor reading rather than a score.
+`gemma-3-270m` and `gemma-3-1b` are gated and could not be downloaded; `k2-horizon-09b` is
+1.08B parameters despite its name, so it is over the ceiling for this table.
+
+DRFR here is not comparable to the paper's GPT-4 figures - see the judge caveats below - but
+it is comparable across these six, which were judged by the same model in the same run.
+
+Two departures from the InFoBench protocol are worth knowing before comparing against
+published DRFR: the judge is a local open model rather than GPT-4, and each requirement is
+judged on its own rather than as a turn in one growing conversation. Sentence counting goes
+through nltk's punkt and language identification through langdetect, which is what the
+reference IFEval harness uses; `uv sync --extra eval` installs both.
 
 ## What to expect at 350M
 

@@ -3,8 +3,10 @@
 # (chat, code, extract) work, and a tool call cannot be forced. Gated models
 # need `hf auth login` or HF_TOKEN before they will download.
 #
-# Everything here is under the 1B ceiling root enforces in process.
-# openbmb/MiniCPM5-1B is 1,080,632,832 parameters and is refused.
+# The sub-1B entries run in process. An id typed straight in above that ceiling
+# is refused - openbmb/MiniCPM5-1B, at 1,080,632,832 parameters, is turned away
+# - but an entry listed here skips the check, which is what lets the 27-31B
+# models at the bottom be picked against a served engine.
 #
 # Models the /model command offers. Any Hugging Face id works with --model or
 # /model, whether or not it is listed here; these are the ones that have been
@@ -38,8 +40,22 @@ models:
     note: 1.00B, gated, no tool calls in its template
   k2-horizon-09b:
     id: IFM/K2-Horizon-0.9B
-    note: 900M, runs code from its own repo
+    note: 1.08B despite its name, runs code from its own repo
     # This model ships a custom architecture, so loading it executes Python from
     # the repository. Read https://hf.co/IFM/K2-Horizon-0.9B before using it,
     # or delete this entry.
     trust_remote_code: true
+
+  # Far past the in-process ceiling: these only work behind a server, as
+  # `--engine vllm` (or sglang/ollama) with the model already being served.
+  # Loading one on the transformers engine will try to put tens of gigabytes of
+  # weights in this process.
+  qwen3.8-27b:
+    id: Qwen/Qwen3.8-27B
+    note: 27.8B, XML tool calls, served engine only
+  qwen3-coder-30b-a3b:
+    id: Qwen/Qwen3-Coder-30B-A3B-Instruct
+    note: 30.5B MoE, tuned for code, XML tool calls, served engine only
+  glm-4.7-flash:
+    id: zai-org/GLM-4.7-Flash
+    note: 31.2B MoE, GLM tool calls, served engine only

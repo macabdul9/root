@@ -4,6 +4,7 @@ import pytest
 
 from root.formats import (
     GENERIC,
+    GLM,
     IFM,
     LFM2,
     QWEN_JSON,
@@ -32,6 +33,7 @@ def test_each_family_is_detected_from_its_template():
     assert detect_format('...<tool_call>\n{"name":...').name == "qwen-json"
     assert detect_format("...<tool_call>\n<function=x>...").name == "qwen-xml"
     assert detect_format("...<ifm|tool_call>...").name == "ifm"
+    assert detect_format("...<tool_call>{name}<arg_key>k</arg_key>...").name == "glm"
 
 
 def test_an_unknown_template_falls_back_to_the_generic_format():
@@ -55,6 +57,35 @@ IFM_CALL = (
 )
 
 
+GLM_CALL = (
+    "<tool_call>calculator<arg_key>expression</arg_key><arg_value>6 * 7</arg_value></tool_call>"
+)
+
+# Each sample is what the model writes after the prefill, so it is both what
+# the grammar has to allow and what the parser has to read back.
+CALL_SAMPLES = {
+    "lfm2": (LFM2, "calculator(expression='6 * 7')]<|tool_call_end|>"),
+    "qwen-json": (
+        QWEN_JSON,
+        'calculator", "arguments": {"expression": "6 * 7"}}\n</tool_call>',
+    ),
+    "qwen-xml": (
+        QWEN_XML,
+        "calculator>\n<parameter=expression>\n6 * 7\n</parameter>\n</function>\n</tool_call>",
+    ),
+    "ifm": (
+        IFM,
+        "calculator\n<ifm|arg_key>expression</ifm|arg_key>\n"
+        "<ifm|arg_value>6 * 7</ifm|arg_value>\n</ifm|tool_call>\n</ifm|tool_calls>",
+    ),
+    "glm": (
+        GLM,
+        "calculator<arg_key>expression</arg_key><arg_value>6 * 7</arg_value></tool_call>",
+    ),
+}
+FORCEABLE = [call_format for call_format, _ in CALL_SAMPLES.values()]
+
+
 @pytest.mark.parametrize(
     "call_format,text",
     [
@@ -62,6 +93,7 @@ IFM_CALL = (
         (QWEN_JSON, QWEN_JSON_CALL),
         (QWEN_XML, QWEN_XML_CALL),
         (IFM, IFM_CALL),
+        (GLM, GLM_CALL),
     ],
 )
 def test_every_format_reads_its_own_call(call_format, text):
@@ -94,25 +126,33 @@ def test_lfm2_unescapes_newlines_in_a_recovered_call():
     assert code.splitlines() == ["x = 1", "print('x')"]
 
 
-@pytest.mark.parametrize("call_format", [LFM2, QWEN_JSON, QWEN_XML, IFM, GENERIC])
+@pytest.mark.parametrize("call_format", [LFM2, QWEN_JSON, QWEN_XML, IFM, GLM, GENERIC])
 def test_every_format_falls_back_to_a_bare_call(call_format):
     assert called(call_format.parse("calculator('2 + 2')", NAMES)) == ("calculator", ["2 + 2"])
 
 
-@pytest.mark.parametrize("call_format", [LFM2, QWEN_JSON, QWEN_XML, IFM, GENERIC])
+@pytest.mark.parametrize("call_format", [LFM2, QWEN_JSON, QWEN_XML, IFM, GLM, GENERIC])
 def test_no_format_finds_a_call_in_prose(call_format):
     assert call_format.parse("The answer is 42.", NAMES) is None
 
 
-@pytest.mark.parametrize("call_format", [LFM2, QWEN_JSON, QWEN_XML, IFM, GENERIC])
+@pytest.mark.parametrize("call_format", [LFM2, QWEN_JSON, QWEN_XML, IFM, GLM, GENERIC])
 def test_no_format_invents_an_unknown_tool(call_format):
     assert call_format.parse("print('hello')", NAMES) is None
 
 
-@pytest.mark.parametrize("call_format", [LFM2, QWEN_JSON, QWEN_XML, IFM])
-def test_a_forceable_prefill_opens_the_format_it_belongs_to(call_format):
+@pytest.mark.parametrize("call_format", FORCEABLE)
+def test_a_forced_turn_round_trips_through_its_own_parser(call_format):
+    """The prefill and the grammar are two halves of one call: whatever the
+    grammar allows after the prefill has to be a call the parser can read back.
+    GLM is why this is not simply `marker in prefill` - it is detected by
+    <arg_key>, which only appears once the model has written the name."""
     assert call_format.forceable
-    assert call_format.marker in call_format.prefill
+    completion = CALL_SAMPLES[call_format.name][1]
+    assert called(call_format.parse(call_format.prefill + completion, NAMES)) == (
+        "calculator",
+        ["6 * 7"],
+    )
 
 
 def test_thinking_is_removed_from_an_answer():
@@ -153,6 +193,7 @@ def test_the_last_closing_tag_wins():
         (QWEN_JSON, QWEN_JSON_CALL),
         (QWEN_XML, QWEN_XML_CALL),
         (IFM, IFM_CALL),
+        (GLM, GLM_CALL),
     ],
 )
 def test_a_format_protects_every_marker_its_parser_needs(call_format, text):
@@ -183,6 +224,11 @@ TWO_ARGUMENT_CALLS = [
         "<ifm|arg_value>a.txt</ifm|arg_value>\n<ifm|arg_key>content</ifm|arg_key>\n"
         "<ifm|arg_value>hi</ifm|arg_value></ifm|tool_call>",
     ),
+    (
+        GLM,
+        "<tool_call>write_file<arg_key>path</arg_key><arg_value>a.txt</arg_value>"
+        "<arg_key>content</arg_key><arg_value>hi</arg_value></tool_call>",
+    ),
 ]
 
 
@@ -210,22 +256,6 @@ def test_a_prompt_without_reasoning_is_not():
     assert not starts_inside_thinking("<|im_start|>assistant\n")
 
 
-CALL_SAMPLES = {
-    "lfm2": (LFM2, "calculator(expression='6 * 7')]<|tool_call_end|>"),
-    "qwen-json": (
-        QWEN_JSON,
-        'calculator", "arguments": {"expression": "6 * 7"}}\n</tool_call>',
-    ),
-    "qwen-xml": (
-        QWEN_XML,
-        "calculator>\n<parameter=expression>\n6 * 7\n</parameter>\n</function>\n</tool_call>",
-    ),
-    "ifm": (
-        IFM,
-        "calculator\n<ifm|arg_key>expression</ifm|arg_key>\n"
-        "<ifm|arg_value>6 * 7</ifm|arg_value>\n</ifm|tool_call>\n</ifm|tool_calls>",
-    ),
-}
 SIGNATURES = [("calculator", ("expression",)), ("write_file", ("path", "content"))]
 
 

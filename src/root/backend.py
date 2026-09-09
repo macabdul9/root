@@ -196,6 +196,63 @@ class LocalModel:
         worker.join()
         return produced[0]
 
+    def complete_batch(self, prompts: list[str], decoding: Decoding | None = None) -> list[str]:
+        """Answer many independent prompts in one pass.
+
+        The agent loop wants one turn at a time; a benchmark wants a thousand,
+        and running them one at a time leaves the GPU idle between short
+        prompts. Padding is on the left because a decoder-only model continues
+        from the last position: right-padded rows would be asked to continue
+        from padding.
+
+        A model with no chat template gets the bare prompt, which is the only
+        thing a base model can be given.
+        """
+        decoding = decoding or Decoding()
+        if decoding.seed is not None:
+            torch.manual_seed(decoding.seed)
+
+        template = self.tokenizer.get_chat_template()
+        rendered = [
+            self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                add_generation_prompt=True,
+                tokenize=False,
+                enable_thinking=False,
+            )
+            if template
+            else prompt
+            for prompt in prompts
+        ]
+
+        side = self.tokenizer.padding_side
+        pad_token = self.tokenizer.pad_token
+        self.tokenizer.padding_side = "left"
+        if pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        try:
+            inputs = self.tokenizer(
+                rendered, return_tensors="pt", padding=True, add_special_tokens=not template
+            ).to(self.device)
+        finally:
+            self.tokenizer.padding_side = side
+
+        prompt_len = inputs["input_ids"].shape[-1]
+        with torch.inference_mode():
+            output = self.model.generate(
+                **inputs,
+                pad_token_id=self.tokenizer.pad_token_id or self.tokenizer.eos_token_id,
+                **decoding.as_generate_kwargs(),
+            )
+
+        answers = []
+        for row in output[:, prompt_len:]:
+            text = self.tokenizer.decode(row, skip_special_tokens=False)
+            for token in self.control:
+                text = text.replace(token, "")
+            answers.append(text.strip())
+        return answers
+
     def unload(self) -> None:
         """Drop the weights so a second model can be loaded in the same session."""
         del self.model

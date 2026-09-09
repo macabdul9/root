@@ -18,16 +18,19 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/cache/huggingface \
+    NLTK_DATA=/opt/nltk_data \
     HOME=/tmp
 
 WORKDIR /opt/root
 COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/tmp/.cache/uv \
-    uv sync --locked --extra dev --no-install-project --no-editable
+    uv sync --locked --extra dev --extra eval --no-install-project --no-editable
 COPY src ./src
 COPY tests ./tests
 RUN --mount=type=cache,target=/tmp/.cache/uv \
-    uv sync --locked --extra dev --no-editable
+    uv sync --locked --extra dev --extra eval --no-editable
+# IFEval counts sentences with punkt; fetched here so scoring stays offline.
+RUN python -c "import nltk; nltk.download('punkt_tab', download_dir='/opt/nltk_data')"
 COPY containers/test.sh /usr/local/bin/root-container-test
 RUN chmod 755 /usr/local/bin/root-container-test \
     && useradd --uid 1000 --no-create-home rootapp \

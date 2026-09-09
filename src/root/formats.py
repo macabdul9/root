@@ -30,6 +30,12 @@ _BARE_JSON_CALL = re.compile(
     r'^\s*\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:.*\}\s*$', re.DOTALL | re.MULTILINE
 )
 
+# GLM reuses Qwen's <tool_call> wrapper but writes the name bare and then
+# alternating key and value tags, so _QWEN_BLOCK finds the call and this reads it.
+_GLM_ARG_PAIR = re.compile(
+    r"<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>\s*(.*?)\s*(?:</arg_value>|$)", re.DOTALL
+)
+
 _IFM_BLOCK = re.compile(r"<ifm\|tool_call>\s*(.+?)\s*(?:</ifm\|tool_call>|$)", re.DOTALL)
 _IFM_ARG_PAIR = re.compile(
     r"<ifm\|arg_key>\s*(.*?)\s*</ifm\|arg_key>.*?"
@@ -247,6 +253,15 @@ def parse_qwen_xml(text: str, tool_names: set[str]) -> Parsed:
     return function.group(1), arguments
 
 
+def parse_glm(text: str, tool_names: set[str]) -> Parsed:
+    block = _QWEN_BLOCK.search(text)
+    if block is None:
+        return _parse_bare_call(text, tool_names)
+    body = block.group(1)
+    name = body.split("<arg_key>")[0].strip()
+    return name, _GLM_ARG_PAIR.findall(body)
+
+
 def parse_ifm(text: str, tool_names: set[str]) -> Parsed:
     block = _IFM_BLOCK.search(text)
     if block is None:
@@ -311,6 +326,17 @@ def regex_qwen_xml(signatures: list[Signature]) -> str:
         + r">\n"
         + "".join(f"<parameter={p}>\n{_UNTIL_TAG}\n</parameter>\n" for p in params)
         + r"</function>\n</tool_call>"
+        for name, params in signatures
+    ]
+    return _alternatives(calls)
+
+
+def regex_glm(signatures: list[Signature]) -> str:
+    # The prefill opened <tool_call>, so the name comes first and bare.
+    calls = [
+        name
+        + "".join(f"<arg_key>{p}</arg_key><arg_value>{_UNTIL_TAG}</arg_value>" for p in params)
+        + r"</tool_call>"
         for name, params in signatures
     ]
     return _alternatives(calls)
@@ -389,6 +415,16 @@ QWEN_JSON = CallFormat(
     parse=parse_qwen_json,
     regex=regex_qwen_json,
 )
+GLM = CallFormat(
+    name="glm",
+    # <tool_call> alone cannot tell GLM from Qwen JSON; the key tag can.
+    marker="<arg_key>",
+    prefill="<tool_call>",
+    stop=("</tool_call>",),
+    keep=("<tool_call>", "<arg_key>", "</arg_key>", "<arg_value>", "</arg_value>"),
+    parse=parse_glm,
+    regex=regex_glm,
+)
 IFM = CallFormat(
     name="ifm",
     marker="<ifm|tool_call>",
@@ -416,8 +452,9 @@ GENERIC = CallFormat(
     parse=_parse_bare_call,
 )
 
-# Ordered: qwen-xml before qwen-json, since an XML template contains both markers.
-KNOWN = (IFM, LFM2, QWEN_XML, QWEN_JSON)
+# Ordered: qwen-json last, since every other <tool_call> template contains its
+# marker too - the XML one adds <function=, GLM's adds <arg_key>.
+KNOWN = (IFM, LFM2, QWEN_XML, GLM, QWEN_JSON)
 
 
 def detect_format(chat_template: str) -> CallFormat:

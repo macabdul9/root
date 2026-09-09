@@ -4,7 +4,7 @@ set -euo pipefail
 # Copy fixtures to writable storage, including when the image is a read-only SIF.
 source_dir="${1:-/opt/root}"
 if (( $# > 0 )); then
-    shift
+  shift
 fi
 run_dir="$(mktemp -d "${TMPDIR:-/tmp}/root-tests.XXXXXXXX")"
 trap 'rm -rf "$run_dir"' EXIT

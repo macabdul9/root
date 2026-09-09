@@ -28,7 +28,10 @@ Stage: root
     export UV_PYTHON_DOWNLOADS=never
     export UV_LINK_MODE=copy
     cd /opt/root
-    uv sync --locked --extra dev --no-editable --no-cache
+    uv sync --locked --extra dev --extra eval --no-editable --no-cache
+    # IFEval counts sentences with punkt. Fetched here so a scoring run
+    # never reaches the network, and works on a read-only image.
+    /opt/venv/bin/python -c "import nltk; nltk.download('punkt_tab', download_dir='/opt/nltk_data')"
     chmod 755 /usr/local/bin/root-container-test
     mkdir -p /workspace /cache/huggingface
     chmod 1777 /workspace /cache /cache/huggingface
@@ -38,6 +41,7 @@ Stage: root
     export PYTHONUNBUFFERED=1
     export PYTHONDONTWRITEBYTECODE=1
     export HF_HOME=/cache/huggingface
+    export NLTK_DATA=/opt/nltk_data
 
 %test
     #!/bin/bash

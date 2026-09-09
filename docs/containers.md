@@ -6,7 +6,9 @@ On an HPC machine with only Apptainer, build `containers/root.def` directly from
 your checkout. Docker, BuildKit, and publishing to Docker Hub are not required.
 For machines with Docker, `Dockerfile` provides the corresponding image and can
 also be converted to SIF. Both recipes contain Python 3.12, root,
-the dependencies in `uv.lock`, grammar support, pytest, ruff, Bash, and Git. It
+the dependencies in `uv.lock`, grammar support, the instruction-following eval extra
+(langdetect and nltk, with punkt already on disk so scoring never reaches the network),
+pytest, ruff, Bash, and Git. It
 installs root as a package and keeps a source snapshot for testing. No model
 weights, host Git history, local configs, or credentials are baked in.
 
@@ -341,6 +343,17 @@ docker run --rm \
   root:local root-eval --device cuda --agent calc --output-dir runs/eval-calc
 ```
 
+The published instruction-following benchmarks are a separate command, and the launcher
+spreads one process per model across the GPUs you name:
+
+```bash
+GPUS=1,2,3 ./scripts/instruct_eval.sh
+```
+
+It writes per-model checkpoints and a `report.json` into a timestamped directory under
+`runs/instruct/`, alongside the commit, the diff and `nvidia-smi` output for the run. See
+[Instruction following](../README.md#instruction-following).
+
 Remove `--agent calc` for all agents. Add `--min-accuracy 0.8` to make accuracy
 below 80% return a failing exit status, choosing a threshold appropriate to your
 model. Results are written to `container-work/runs/eval-calc/evals.json`.
@@ -503,11 +516,13 @@ its installed environment is read-only.
   the container. Pass `--engine-url` with a reachable server address and select
   the engine explicitly. This image contains the client, not those servers.
 
-An ARM64 HPC host successfully built the Trixie Apptainer image and passed all
-352 unit tests. Its first GPU inference exposed the missing compiler dependency
-addressed above. The updated image still needs a GPU inference run on that host;
-Docker and Apptainer are unavailable on the local development machine. The
-build-time tests do not establish GPU or model accuracy compatibility.
+Verified on an ARM64 HPC host with GH200 cards: the Apptainer image builds, the
+unit suite passes inside it, and GPU inference runs - `scripts/instruct_eval.sh`
+generated and scored 6,246 responses across six models on that image, which is
+what surfaced the two build fixes above (Trixie for the host fakeroot library,
+`build-essential` for Triton). The Docker half of this recipe is unverified:
+there is no Docker on that host, so the Dockerfile has never actually been built.
+Neither path says anything about model accuracy.
 
 Reference behavior: [uv Docker integration](https://docs.astral.sh/uv/guides/integration/docker/),
 [Docker platform builds](https://docs.docker.com/build/building/multi-platform/),
