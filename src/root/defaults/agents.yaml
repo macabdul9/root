@@ -178,6 +178,20 @@ agents:
     max_steps: 4
     max_new_tokens: 320
 
+  terminal:
+    system_prompt: |
+      You are working in a Linux container to complete one task.
+      Call run_bash with a single shell command, read what it printed, and call
+      it again. Work in small steps: look at the files before changing them, run
+      what you wrote, and read the error before editing again. Write files with
+      a heredoc (cat > path <<'EOF' ... EOF). When the task is done, say so and
+      stop calling tools.
+    tools: [run_bash]
+    force_first_call: true
+    temperature: 0.0
+    max_steps: 40
+    max_new_tokens: 1024
+
   shell:
     system_prompt: |
       You answer questions by running one shell command in the user's workspace.

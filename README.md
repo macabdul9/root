@@ -878,6 +878,97 @@ judged on its own rather than as a turn in one growing conversation. Sentence co
 through nltk's punkt and language identification through langdetect, which is what the
 reference IFEval harness uses; `uv sync --extra eval` installs both.
 
+## Terminal tasks through Harbor
+
+IFEval and InFoBench score the model's output directly. A terminal benchmark
+instead hands an agent a container, lets it work, and grades what it left behind,
+so the harness has to drive root rather than the other way round.
+[Harbor](https://harborframework.com/docs) accepts a custom agent as an import
+path, which is all root needs to appear in one:
+
+```bash
+uv sync --extra harbor
+harbor run -d terminal-bench-science/terminal-bench-science@latest \
+  --agent root.harbor:RootAgent \
+  --model qwen3.8-27b \
+  --ak engine=vllm --ak engine_url=http://127.0.0.1:8000 \
+  --env singularity
+```
+
+`root.sandbox` holds the part that is not Harbor's: a `run_bash` whose body is
+supplied by whoever owns the container, so the same loop that answers a chat
+prompt locally can work inside a sandbox it cannot see. `root.harbor` is the
+thin `BaseAgent` around it - the model stays on the host, which suits a
+benchmark whose task environments are CPU-only while the weights want a GPU.
+
+Two deliberate differences from the local tools. The refusal list in
+`tools.run_bash` is not applied, because it exists to protect the machine root
+runs on and the command now lands in a container built to be thrown away; a task
+legitimately needs to install, write and delete. And observations truncate at
+8,000 characters rather than 800, because a directory listing or a traceback cut
+to 800 reads to the model exactly like a command that did not work.
+
+`--ak` passes agent options: `agent` picks the root agent (default `terminal`,
+which has a 40-step budget rather than the 4 a chat turn needs), `engine` and
+`engine_url` choose what generates the tokens, `max_steps` overrides the budget.
+
+The `harbor` extra is not in `dev`: it is 89 packages, and it needs Python 3.12
+where root supports 3.10, so it carries a marker and the adapter is simply
+unavailable on older interpreters. `tests/test_harbor.py` skips without it.
+
+### Terminal-Bench-Science does not run under `--env singularity`
+
+Verified on this checkout, and worth knowing before planning around Apptainer.
+Every one of the benchmark's 70 tasks grades in a verifier with
+`network_mode = "no-network"`, and Harbor's Singularity environment refuses any
+such task rather than grading in a weaker sandbox than was asked for.
+
+The refusal is not a missing declaration. That backend drives its container
+through a FastAPI server it reaches **over the host network**, so isolating the
+network severs its own control channel: declaring the capability and setting
+Apptainer's `--net --network none` gets `Server process died on port ...` on
+every retry, even though Apptainer isolates the network correctly on its own.
+So the benchmark needs `--env docker` or a cloud sandbox (`modal`, `daytona`,
+`e2b`), not Apptainer.
+
+What does work under Apptainer is everything up to that point: the agent
+environment starts, `root.harbor:RootAgent` drives commands into it, and a task
+whose verifier shares the agent environment runs end to end - which is what
+`containers/harbor-smoke/` exercises.
+
+### Building task images without Docker
+
+Harbor's `singularity` environment takes a prebuilt image, so a host with
+Apptainer and no Docker can still run tasks - it just cannot build them. Two
+things make that work, neither obvious:
+
+- `docker_image` under `[environment]` in `task.toml` accepts a path to a
+  `.sif`, and the singularity backend uses it as-is with no build step.
+- the task's `environment/` directory must exist even then, because
+  `Task.is_valid_dir` checks for it before reading the config. Without it the
+  path is silently treated as a dataset directory and the run fails with
+  "Either datasets or tasks must be provided".
+
+So the route on a cluster is: build each task's `environment/Dockerfile` into a
+`.sif` on a machine that has Docker or podman, copy the images over, point each
+`task.toml` at one, and run with `--env singularity`. Building locally needs
+`/etc/subuid` delegation, which a shared login node usually does not give you -
+Apptainer 1.4 has no `dockerfile:` bootstrap and rootless podman cannot run a
+build step without it.
+
+`containers/harbor-smoke/` is a one-file task for exactly that check - build its
+`env.def` with Apptainer, point `task.toml` at the `.sif`, and run it. On
+LFM2.5-350M it scores 0 by reaching for `echo 42 >> /app/answer.txt`, appending
+where the task said replace, and then reporting success; the transcript Harbor
+collects at `agent/root-transcript.txt` is what makes that visible rather than a
+bare zero.
+
+**Do not expect a sub-1B model to score on this.** Terminal-Bench-Science tasks
+carry a median expert-time estimate of 12 hours and give the agent 8, and the
+reward is binary on a verifier that runs the task's own pytest suite over real
+numerical output. The adapter is worth having for the 27-31B models served
+through `--engine vllm`; pointed at `lfm2-350m` it will return a column of zeros.
+
 ## What to expect at 350M
 
 Single-hop tool use is reliable once the right agent is chosen. Reading a long file and

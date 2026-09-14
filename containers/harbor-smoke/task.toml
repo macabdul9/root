@@ -1,0 +1,19 @@
+schema_version = "1.4"
+
+[task]
+name = "root-smoke/hello-root"
+description = "Write 42 into a file. Exists to prove the harbor/root/singularity chain works."
+
+[metadata]
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 900.0
+
+[environment]
+build_timeout_sec = 600.0
+docker_image = "REPLACED_BY_README_STEP"
+cpus = 1
+memory_mb = 2048

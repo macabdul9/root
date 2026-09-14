@@ -21,6 +21,7 @@ dependencies = [
 dev = ["pytest>=8.0", "ruff>=0.6", "outlines>=1.3", "langdetect>=1.0.9", "nltk>=3.10.3"]
 grammar = ["outlines>=1.3"]
 eval = ["langdetect>=1.0.9", "nltk>=3.10.3"]
+harbor = ["harbor[modal]>=0.22; python_version >= '3.12'"]
 
 [project.scripts]
 root = "root.run:main"
