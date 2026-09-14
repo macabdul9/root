@@ -20,6 +20,7 @@ from .config import (
 )
 from .engines import AUTO as AUTO_ENGINE
 from .engines import ENGINES, EngineUnavailable, load_engine
+from .goal import Check, pursue, summarise
 from .mcp import MCPTools, declared_tools, describe, load_servers
 from .progress import working
 from .route import AUTO, Route, choose_agent, fallback_agent
@@ -73,6 +74,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="do not constrain forced tool calls; faster, and the parser repairs instead",
     )
     parser.add_argument("--max-steps", type=int, help="override the agent's step budget")
+    parser.add_argument(
+        "--until",
+        metavar="COMMAND",
+        help="keep working until this shell command exits 0, rather than stopping "
+        "at the agent's first answer",
+    )
+    parser.add_argument(
+        "--attempts", type=int, default=5, help="how many times to try, with --until"
+    )
+    parser.add_argument(
+        "--deadline", type=float, metavar="SECONDS", help="give up after this long, with --until"
+    )
     parser.add_argument("--temperature", type=float, help="0 for greedy decoding")
     parser.add_argument("--top-p", type=float, help="nucleus sampling mass")
     parser.add_argument("--top-k", type=int, help="0 disables top-k")
@@ -108,6 +121,53 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="how much of the loop to print to stderr",
     )
     return parser.parse_args(argv)
+
+
+def _pursue(args, spec, model, tools, prompt, show) -> int:
+    """Work at the task until `--until` passes, and exit on its verdict.
+
+    The exit status is the check's, not the agent's: a script that runs this
+    needs to know whether the work is done, and the agent's own view of that is
+    exactly what --until exists to replace.
+    """
+    check = Check(command=args.until, workspace=args.workspace)
+    pursuit = pursue(
+        model,
+        spec,
+        prompt,
+        tools,
+        check,
+        attempts=args.attempts,
+        deadline_sec=args.deadline,
+        on_step=show,
+    )
+    if pursuit.attempts:
+        print(pursuit.attempts[-1].answer, flush=True)
+    if args.trace != "off":
+        print(summarise(pursuit), file=sys.stderr)
+    if args.output_dir:
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        (args.output_dir / "pursuit.json").write_text(
+            json.dumps(
+                {
+                    "task": pursuit.task,
+                    "command": pursuit.command,
+                    "passed": pursuit.passed,
+                    "already_passing": pursuit.already_passing,
+                    "attempts": len(pursuit.attempts),
+                    "calls": pursuit.calls,
+                    "seconds": pursuit.seconds,
+                    "checks": [
+                        {"passed": outcome.passed, "output": outcome.output}
+                        for outcome in pursuit.outcomes
+                    ],
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+    return 0 if pursuit.passed else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -243,6 +303,9 @@ def main(argv: list[str] | None = None) -> int:
             lambda text: print(text, end="", flush=True),
             thinking=getattr(model, "thinks_first", False),
         )
+
+    if args.until:
+        return _pursue(args, spec, model, tools, prompt, show)
 
     result = run_agent(
         model,

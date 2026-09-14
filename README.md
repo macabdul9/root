@@ -821,6 +821,36 @@ control tokens is a turn boundary once it is tokenised. Every observation is
 rewritten and fenced with a nonce before it reaches the transcript - see
 [docs/browser-mcp](docs/browser-mcp/) for the hijack that motivated it.
 
+## Working until it is done
+
+`root` answers one prompt and stops. It stops when the model produces a turn
+without a tool call - which is the model's own opinion that it has finished, and
+on a task that opinion is worth very little. `--until` replaces it with a shell
+command whose exit status decides:
+
+```bash
+root --agent terminal --until 'pytest -q' --attempts 5 "fix the failing test"
+root --agent terminal --until 'test -f report.csv' "build the report"
+```
+
+Each attempt runs the agent, then runs the check. On failure the check's output
+goes back to the model verbatim - without it the model rewrites the same thing,
+having no way to know what its last edit did - and the conversation carries
+forward so the next attempt is a continuation, not a fresh start on a workspace
+it no longer recognises.
+
+The check runs first, so a task already satisfied costs nothing and never wakes
+the model. The exit status is the check's, not the agent's: a script that runs
+this needs to know whether the work is actually done. `--attempts` bounds the
+tries, `--deadline` bounds the wall clock, and `--output-dir` writes
+`pursuit.json` with every check's output.
+
+Expect this to need a real model. On `add()` returning `a - b`, LFM2.5-350M
+spent three attempts running `calc.py add subtracts` as a shell command and
+never opened the file; Qwen3.5-0.8B read the file, rewrote it with a heredoc and
+passed the check on the first attempt. The loop is honest about the difference -
+it exits non-zero and leaves the workspace alone rather than reporting success.
+
 ## Evaluating
 
 ```bash
