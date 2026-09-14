@@ -1,11 +1,15 @@
-# Web search for root, via the Brave Search MCP server
+# Web search for root, via MCP
 
-Status: **design only. No implementation on this branch.**
+Status: **implemented.** `src/root/mcp.py` speaks both transports, the `web` agent
+calls the tools, and the default server is Parallel's hosted Search MCP rather than
+the Brave server this research was written against - Parallel needs no Docker, no
+key and no local process, which is a better fit for a project whose point is that it
+runs anywhere. See [Web search](../../README.md#web-search) for how to turn it on.
 
-This branch exists to hold the research behind adding web search to `root`, so that
-`main` stays free of a half-built feature. Nothing here is wired into the harness:
-there is no `src/root/mcp.py`, no `web_search` tool, and no new dependency. The
-research is in [`research/`](research/), twelve notes grouped into three areas.
+This directory holds the research the implementation was built from; it was written
+before any code existed, so where a note describes Brave's stdio server it is
+describing the shape of the problem, not what ships. The research is in
+[`research/`](research/), twelve notes grouped into three areas.
 
 Read [`research/security-01-attacks-measured.md`](research/security-01-attacks-measured.md)
 first. It found a working hijack of the harness as it stands today, and that finding

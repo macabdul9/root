@@ -15,6 +15,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import requests
 import yaml
 
 from . import __version__
@@ -80,20 +81,28 @@ class MCPProtocolError(RuntimeError):
 class ServerSpec:
     """One server root can spawn.
 
-    `env` names environment variables that must already be set in the shell
-    that starts root; their values are never read from the config file, so a
+    A server is either spawned (`command`) or reached over HTTP (`url`), never
+    both. `env` names environment variables that must already be set in the
+    shell that starts root, and `api_key_env` names one holding a bearer token
+    for a remote server; their values are never read from the config file, so a
     key cannot end up committed. `arguments` pins per-tool values the model
     never sees, which is how a search tool is kept from returning twenty
     results into an 800-character budget.
     """
 
     name: str
-    command: str
+    command: str = ""
+    url: str = ""
+    api_key_env: str = ""
     args: tuple[str, ...] = ()
     env: tuple[str, ...] = ()
     enabled: bool = False
     note: str = ""
     arguments: dict[str, dict] = field(default_factory=dict)
+
+    @property
+    def remote(self) -> bool:
+        return bool(self.url)
 
 
 def load_servers(path: Path | None = None) -> dict[str, ServerSpec]:
@@ -105,12 +114,14 @@ def load_servers(path: Path | None = None) -> dict[str, ServerSpec]:
     servers = {}
     for name, entry in (document.get("servers") or {}).items():
         entry = entry or {}
-        if "command" not in entry:
-            raise ValueError(f"mcp server {name}: no command")
+        if ("command" in entry) == ("url" in entry):
+            raise ValueError(f"mcp server {name}: set exactly one of command or url")
         tools = entry.get("tools") or {}
         servers[name] = ServerSpec(
             name=name,
-            command=str(entry["command"]),
+            command=str(entry.get("command", "")),
+            url=str(entry.get("url", "")),
+            api_key_env=str(entry.get("api_key_env", "")),
             args=tuple(str(argument) for argument in entry.get("args") or ()),
             env=tuple(str(variable) for variable in entry.get("env") or ()),
             enabled=bool(entry.get("enabled", False)),
@@ -398,21 +409,7 @@ class MCPClient:
             except json.JSONDecodeError:
                 logger.debug("%s: not JSON on stdout: %.200s", self.spec.name, line)
                 continue
-            if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
-                logger.debug("%s: not an MCP message: %.200s", self.spec.name, line)
-                continue
-            if "method" in message:
-                logger.debug("%s: %s from the server", self.spec.name, message["method"])
-                continue
-            identifier = message.get("id")
-            with self._lock:
-                waiter = self._waiting.pop(identifier, None)
-            if waiter is None:
-                logger.debug(
-                    "%s: reply to %r, which nothing is waiting for", self.spec.name, identifier
-                )
-                continue
-            waiter.put(message)
+            self._dispatch(message)
 
         with self._lock:
             abandoned = list(self._waiting.values())
@@ -430,12 +427,151 @@ class MCPClient:
             self._stderr.append(line.rstrip())
             logger.debug("%s: %s", self.spec.name, line.rstrip())
 
+    def _dispatch(self, message: object) -> None:
+        """Hand one reply to whatever asked for it, or drop it.
+
+        Shared by both transports: a stdio line and an HTTP body carry the same
+        messages, and only the way they arrive differs.
+        """
+        if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
+            logger.debug("%s: not an MCP message: %.200s", self.spec.name, message)
+            return
+        if "method" in message:
+            logger.debug("%s: %s from the server", self.spec.name, message["method"])
+            return
+        identifier = message.get("id")
+        with self._lock:
+            waiter = self._waiting.pop(identifier, None)
+        if waiter is None:
+            logger.debug(
+                "%s: reply to %r, which nothing is waiting for", self.spec.name, identifier
+            )
+            return
+        waiter.put(message)
+
     def _epitaph(self) -> str:
         process = self._process
         code = process.poll() if process is not None else None
         said = " ".join(self._stderr).strip()
         ending = f"exit {code}" if code is not None else "the pipe is closed"
         return f"{self.spec.name} stopped ({ending})" + (f": {said[-300:]}" if said else "")
+
+
+class HTTPClient(MCPClient):
+    """A server reached over HTTP rather than spawned.
+
+    Everything above the transport is identical, so only the methods that touch
+    the pipe are replaced. A POST carries one message and its reply comes
+    straight back, handed to the waiting caller exactly as the stdio reader
+    would, which leaves `_request`, the handshake and the paging untouched.
+
+    Streamable HTTP answers either with one JSON object or with an SSE stream
+    carrying the same object in a `data:` line. Both come from the same server
+    depending on the request, so both are read.
+    """
+
+    def __init__(self, spec: ServerSpec, **kwargs) -> None:
+        super().__init__(spec, **kwargs)
+        self._http: requests.Session | None = None
+        self._session_id: str | None = None
+        self._negotiated = False
+
+    @property
+    def running(self) -> bool:
+        return self._http is not None
+
+    def start(self) -> None:
+        if self.running:
+            return
+        missing = [name for name in self.spec.env if not os.environ.get(name)]
+        if missing:
+            raise MCPUnavailable(
+                f"{self.spec.name} needs {', '.join(missing)} set in the environment"
+            )
+        self._http = requests.Session()
+        self._negotiated = False
+        atexit.register(self.close)
+        try:
+            self._handshake()
+        except BaseException:
+            self.close()
+            raise
+        self._negotiated = True
+
+    def close(self) -> None:
+        http, self._http = self._http, None
+        self._session_id = None
+        self._negotiated = False
+        if http is None:
+            return
+        atexit.unregister(self.close)
+        http.close()
+
+    def _headers(self) -> dict[str, str]:
+        headers = {
+            "Content-Type": "application/json",
+            # A streamable server chooses its reply shape from this, and some
+            # refuse the request outright if the SSE type is missing.
+            "Accept": "application/json, text/event-stream",
+        }
+        if self._negotiated:
+            headers["MCP-Protocol-Version"] = self.version
+        if self._session_id:
+            headers["Mcp-Session-Id"] = self._session_id
+        key = os.environ.get(self.spec.api_key_env) if self.spec.api_key_env else ""
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
+        return headers
+
+    def _send(self, message: dict) -> None:
+        http = self._http
+        if http is None:
+            raise MCPUnavailable(f"{self.spec.name} is not connected")
+        try:
+            response = http.post(
+                self.spec.url, json=message, headers=self._headers(), timeout=self.timeout
+            )
+        except requests.RequestException as exc:
+            raise MCPUnavailable(f"{self.spec.name}: {self.spec.url} unreachable: {exc}") from None
+        # Handed out on initialize and expected on every later request; a server
+        # that issues one and never gets it back rejects everything after.
+        self._session_id = response.headers.get("Mcp-Session-Id") or self._session_id
+        if response.status_code >= 400:
+            raise MCPUnavailable(
+                f"{self.spec.name}: {self.spec.url} returned {response.status_code}: "
+                f"{response.text[:200]}"
+            )
+        for reply in replies(response):
+            self._dispatch(reply)
+
+    def _epitaph(self) -> str:
+        return f"{self.spec.name} at {self.spec.url} stopped answering"
+
+
+def replies(response) -> list[dict]:
+    """The JSON-RPC messages in one HTTP response, whichever shape it took.
+
+    A notification is answered with 202 and no body, which is not an error and
+    carries nothing to dispatch.
+    """
+    if not response.content:
+        return []
+    kind = (response.headers.get("Content-Type") or "").split(";")[0].strip()
+    if kind == "text/event-stream":
+        found = []
+        for line in response.text.splitlines():
+            if line.startswith("data:"):
+                try:
+                    found.append(json.loads(line[5:].strip()))
+                except json.JSONDecodeError:
+                    logger.debug("not JSON in an SSE frame: %.200s", line)
+        return found
+    try:
+        parsed = json.loads(response.content)
+    except json.JSONDecodeError:
+        logger.debug("not JSON in an HTTP reply: %.200s", response.text)
+        return []
+    return parsed if isinstance(parsed, list) else [parsed]
 
 
 def defang(text: str) -> str:
@@ -509,44 +645,67 @@ def observation(server: str, blocks: list[dict], failed: bool) -> str:
     return f"error: {framed}" if failed else framed
 
 
-def _parameters(schema: dict) -> tuple[tuple[Parameter, ...], str]:
+def _parameters(schema: dict) -> tuple[tuple[Parameter, ...], frozenset[str], str]:
     """Project an MCP input schema onto root's parameters, or say why it cannot.
 
     Only required parameters are exposed. Optional ones are left to the server's
     defaults or pinned in mcp.yaml: a small model that is offered them fills
     them wrong, and a dropped parameter produces a call the server rejects.
+
+    A list of strings is offered to the model as one comma-separated string and
+    split back before the call. Every root tool takes strings, and a 350M model
+    writes `solar capacity, wind capacity` far more reliably than it writes a
+    JSON array - which is the whole reason root's tools look the way they do.
+    The returned set names the parameters that need splitting.
     """
     properties = schema.get("properties") if isinstance(schema, dict) else None
     properties = properties if isinstance(properties, dict) else {}
     required = [name for name in schema.get("required") or [] if isinstance(name, str)]
     if not required:
-        return (), "no required parameters, so nothing for the model to fill"
+        return (), frozenset(), "no required parameters, so nothing for the model to fill"
     if len(required) > MAX_PARAMETERS:
-        return (), f"{len(required)} required parameters, more than {MAX_PARAMETERS}"
+        return (), frozenset(), f"{len(required)} required parameters, more than {MAX_PARAMETERS}"
 
     parameters = []
+    lists = set()
     for name in required:
         if not _IDENTIFIER.match(name):
-            return (), f"{name!r} is not a name root can put in a call"
+            return (), frozenset(), f"{name!r} is not a name root can put in a call"
         entry = properties.get(name)
         entry = entry if isinstance(entry, dict) else {}
-        if entry.get("type") != "string":
-            return (), f"{name} is {entry.get('type', 'unspecified')}, not a string"
+        kind = entry.get("type")
+        if kind == "array":
+            item = entry.get("items")
+            item = item if isinstance(item, dict) else {}
+            if item.get("type") != "string":
+                return (), frozenset(), f"{name} is a list of {item.get('type', 'unspecified')}"
+            lists.add(name)
+        elif kind != "string":
+            return (), frozenset(), f"{name} is {kind or 'unspecified'}, not a string"
         parameters.append(
             Parameter(
                 name=name,
-                description=_describe(name, entry),
-                freeform=not any(key in entry for key in _CLOSED),
+                description=_describe(name, entry, name in lists),
+                # A list is written as prose either way, and a grammar built for
+                # one string would forbid the commas that separate the items.
+                freeform=name in lists or not any(key in entry for key in _CLOSED),
             )
         )
-    return tuple(parameters), ""
+    return tuple(parameters), frozenset(lists), ""
 
 
-def _describe(name: str, entry: dict) -> str:
+def split_list(value: str) -> list[str]:
+    """The model's comma-separated string as the list the server asked for."""
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _describe(name: str, entry: dict, is_list: bool = False) -> str:
     text = str(entry.get("description") or f"The {name}.").strip()
     choices = entry.get("enum")
     if isinstance(choices, list) and choices:
         text = f"{text.rstrip('.')}. One of: {', '.join(str(choice) for choice in choices)}."
+    if is_list:
+        text = f"{text.rstrip('.')}. Separate several with commas."
     return text
 
 
@@ -555,7 +714,7 @@ def adapt(client: MCPClient, listed: dict) -> tuple[Tool | None, str]:
     raw = str(listed.get("name") or "")
     if not raw:
         return None, "a tool with no name"
-    parameters, reason = _parameters(listed.get("inputSchema") or {})
+    parameters, lists, reason = _parameters(listed.get("inputSchema") or {})
     if not parameters:
         return None, f"{raw}: {reason}"
 
@@ -563,7 +722,10 @@ def adapt(client: MCPClient, listed: dict) -> tuple[Tool | None, str]:
     pinned = server.arguments.get(raw, {})
 
     def run(**arguments: str) -> str:
-        blocks, failed = client.call(raw, {**pinned, **arguments})
+        filled = {
+            name: split_list(value) if name in lists else value for name, value in arguments.items()
+        }
+        blocks, failed = client.call(raw, {**pinned, **filled})
         return observation(server.name, blocks, failed)
 
     description = str(listed.get("description") or listed.get("title") or raw).strip()
@@ -587,7 +749,11 @@ class MCPTools:
     """
 
     def __init__(self, servers: dict[str, ServerSpec]) -> None:
-        self.clients = {name: MCPClient(spec) for name, spec in servers.items() if spec.enabled}
+        self.clients = {
+            name: (HTTPClient if spec.remote else MCPClient)(spec)
+            for name, spec in servers.items()
+            if spec.enabled
+        }
         self.skipped: list[str] = []
         self.failed: dict[str, str] = {}
         self._tools: dict[str, Tool] | None = None
@@ -631,11 +797,15 @@ def describe(servers: dict[str, ServerSpec], registry: MCPTools) -> str:
         return "no MCP servers configured; see configs/mcp.yaml"
     lines = []
     for name, spec in servers.items():
-        lines.append(f"{name:10s} {'enabled' if spec.enabled else 'disabled'}  {spec.command}")
+        where = spec.url or spec.command
+        lines.append(f"{name:10s} {'enabled' if spec.enabled else 'disabled'}  {where}")
         if spec.note:
             lines.append(f"{'':10s} {spec.note}")
-        if spec.env:
-            lines.append(f"{'':10s} reads {', '.join(spec.env)} from the environment")
+        reads = list(spec.env)
+        if spec.api_key_env:
+            reads.append(f"{spec.api_key_env} (optional)")
+        if reads:
+            lines.append(f"{'':10s} reads {', '.join(reads)} from the environment")
     for tool in registry.tools().values():
         arguments = ", ".join(parameter.name for parameter in tool.parameters)
         lines.append(f"  {tool.name}({arguments})  {tool.description}")

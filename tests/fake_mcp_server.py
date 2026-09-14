@@ -82,6 +82,21 @@ PAGE_TWO = [
 ]
 
 
+# A tool shaped like Parallel's web_search: one of its required arguments is a
+# list of strings, which root offers to the model as one comma-separated string.
+LIST_TOOL = [
+    {
+        "name": "queries",
+        "description": "Take a list of strings.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"queries": {"type": "array", "items": {"type": "string"}}},
+            "required": ["queries"],
+        },
+    },
+]
+
+
 class Server:
     def __init__(self, options: argparse.Namespace) -> None:
         self.options = options
@@ -176,6 +191,9 @@ class Server:
         if method == "tools/list":
             page = params.get("cursor")
             if page is None:
+                if self.options.list_arg:
+                    self.reply(identifier, {"tools": LIST_TOOL})
+                    return
                 self.reply(identifier, {"tools": PAGE_ONE, "nextCursor": "second"})
             else:
                 self.reply(identifier, {"tools": PAGE_TWO})
@@ -198,7 +216,9 @@ class Server:
         if self.options.die_on_call:
             raise SystemExit(3)
 
-        if name == "echo":
+        if name == "queries":
+            self.done(identifier, json.dumps(arguments, sort_keys=True))
+        elif name == "echo":
             self.done(identifier, str(arguments.get("text", "")))
         elif name == "pair":
             self.done(identifier, f"{arguments.get('path')}|{arguments.get('content')}")
@@ -252,6 +272,7 @@ def main() -> None:
     parser.add_argument("--hang", action="store_true", help="accept tools/call and never answer")
     parser.add_argument("--die-on-call", action="store_true")
     parser.add_argument("--noisy", action="store_true", help="write junk to stdout and stderr")
+    parser.add_argument("--list-arg", action="store_true", help="offer one array-valued tool")
     Server(parser.parse_args()).run()
 
 

@@ -15,9 +15,12 @@ from root.mcp import (
     MCPTools,
     MCPUnavailable,
     ServerSpec,
+    _parameters,
+    adapt,
     declared_tools,
     load_servers,
     observation,
+    split_list,
 )
 from root.route import choose_agent
 from root.tools import MAX_TOOL_OUTPUT_CHARS, build_tools
@@ -297,8 +300,19 @@ def test_the_packaged_agents_only_name_tools_root_can_provide():
 def test_the_web_agent_searches_rather_than_reading_the_workspace():
     web = load_agents(config_path("agents.yaml"))["web"]
 
-    assert web.tools == ("brave_web_search", "brave_news_search")
+    assert web.tools
+    assert not set(web.tools) & set(build_tools(Path(".")))
     assert web.force_first_call
+
+
+def test_the_web_agent_can_call_the_tool_its_prompt_names():
+    """The prompt names one tool to call. Renaming a server or reordering the
+    list without touching the prompt leaves the model reaching for a tool it
+    was never given, which reads as the model ignoring its instructions."""
+    web = load_agents(config_path("agents.yaml"))["web"]
+    named = [tool for tool in web.tools if tool in web.system_prompt]
+
+    assert named, f"the prompt names none of {web.tools}"
 
 
 @pytest.mark.parametrize(
@@ -340,3 +354,58 @@ def test_an_agent_whose_server_is_switched_off_still_answers(tmp_path):
 
     assert result.answer == "No search server is enabled."
     assert not result.calls
+
+
+def a_schema(**properties):
+    return {"type": "object", "properties": properties, "required": list(properties)}
+
+
+STRING_LIST = {"type": "array", "items": {"type": "string"}}
+
+
+def test_a_list_of_strings_is_offered_to_the_model_as_one_string():
+    """Parallel's web_search requires an array of queries. Every root tool takes
+    strings, and a 350M model writes `solar, wind` far more reliably than it
+    writes a JSON array."""
+    parameters, lists, reason = _parameters(
+        a_schema(objective={"type": "string"}, search_queries=STRING_LIST)
+    )
+
+    assert reason == ""
+    assert [p.name for p in parameters] == ["objective", "search_queries"]
+    assert lists == {"search_queries"}
+
+
+def test_a_list_parameter_tells_the_model_how_to_separate_items():
+    parameters, _, _ = _parameters(a_schema(urls=STRING_LIST))
+    assert "commas" in parameters[0].description
+
+
+def test_a_list_parameter_is_freeform_so_no_grammar_forbids_the_commas():
+    parameters, _, _ = _parameters(a_schema(urls={**STRING_LIST, "pattern": "^http"}))
+    assert parameters[0].freeform
+
+
+def test_a_list_of_anything_other_than_strings_is_refused():
+    _, _, reason = _parameters(a_schema(counts={"type": "array", "items": {"type": "number"}}))
+    assert "list of number" in reason
+
+
+def test_split_list_takes_the_items_and_drops_the_gaps():
+    assert split_list(" solar capacity , wind capacity ,, ") == ["solar capacity", "wind capacity"]
+
+
+def test_split_list_of_one_is_still_a_list():
+    assert split_list("one query") == ["one query"]
+
+
+def test_a_list_argument_reaches_the_server_as_a_list(spawn):
+    """The split has to happen before the call: a server given a string where
+    its schema says array rejects the call, and the model never sees why."""
+    client = spawn("--list-arg")
+    tool, reason = adapt(client, client.list_tools()[0])
+
+    assert tool is not None, reason
+    observed = tool.run(queries="alpha, beta")
+
+    assert '"queries": ["alpha", "beta"]' in observed

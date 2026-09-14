@@ -19,6 +19,27 @@
 # agent may name one while the server is switched off.
 
 servers:
+  parallel:
+    # Parallel's hosted Search MCP. Free and anonymous, so nothing has to be
+    # installed and no key is needed; set PARALLEL_API_KEY in the shell for
+    # higher rate limits and it is sent as a bearer token.
+    #
+    # Off by default like every server here. Enabling one costs a tools/list
+    # round trip on every startup, which a session that only wants the
+    # calculator should not pay.
+    enabled: false
+    note: Parallel web search. No key needed; PARALLEL_API_KEY raises the limits.
+    url: https://search.parallel.ai/mcp
+    api_key_env: PARALLEL_API_KEY
+    tools:
+      web_search:
+        arguments: {}
+      web_fetch:
+        arguments:
+          # The excerpt is a page's relevant part; the whole page is tens of
+          # thousands of tokens into an 800-character budget.
+          full_content: false
+
   brave:
     # Needs a Brave Search API key in BRAVE_API_KEY and Docker on the PATH.
     # `docker pull brave/brave-search-mcp-server:v2.1.3` once, then set
