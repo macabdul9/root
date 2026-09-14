@@ -53,6 +53,21 @@ def is_conversational(prompt: str) -> bool:
 # about - a miss costs nothing, a wrong route runs the wrong tool.
 RULES: tuple[tuple[str, str, str], ...] = (
     (
+        # First, because several of the rules below claim the verb: "search for
+        # the latest news" is a web question and `search for` is the code one.
+        # The bare "look up" is guarded against a filename, which is the one
+        # phrasing that means the workspace rather than the internet.
+        "web",
+        r"\b(search|searching|look|looking)\b.{0,15}\b(the )?(web|internet|online)\b"
+        r"|\b(web|internet|online|google) search\b"
+        r"|\bgoogle\b\s+\w"
+        r"|\bnews (on|about|for|from)\b"
+        r"|\b(latest|recent|current|today'?s)\b.{0,25}"
+        r"\b(news|headlines|release|version|price|weather|score)\b"
+        r"|^(?!.*\.[a-z]{1,4}\b).*\blook up\b",
+        "web",
+    ),
+    (
         "write code",
         r"\b(write|show|give|generate)\b.{0,20}\b(code|function|program|script|class|snippet)\b"
         r"|\bimplement\b.{0,25}\b(function|algorithm|class)\b",

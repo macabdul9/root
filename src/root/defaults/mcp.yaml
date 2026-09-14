@@ -1,0 +1,78 @@
+# MCP servers root may call tools from. Each one is a command root spawns and
+# speaks JSON-RPC to over the child's stdin and stdout, one message per line.
+#
+# Nothing starts until a tool from that server is needed, and a server left
+# disabled is never spawned at all. Root exposes only the tools whose required
+# parameters are one or two strings; the rest are listed by `root --mcp` with
+# the reason they were skipped.
+#
+# Secrets are named here, never written here. `env` lists environment variables
+# that must already be set in the shell that starts root, so a key stays out of
+# this file, out of the process table, and out of version control.
+#
+#   env:
+#     - BRAVE_API_KEY
+#
+# `tools:` is optional. It pins arguments the model never sees, which is how a
+# search tool is kept from returning twenty results into an 800-character
+# budget, and it tells root which tool names this server contributes so an
+# agent may name one while the server is switched off.
+
+servers:
+  parallel:
+    # Parallel's hosted Search MCP. Free and anonymous, so nothing has to be
+    # installed and no key is needed; set PARALLEL_API_KEY in the shell for
+    # higher rate limits and it is sent as a bearer token.
+    #
+    # Off by default like every server here. Enabling one costs a tools/list
+    # round trip on every startup, which a session that only wants the
+    # calculator should not pay.
+    enabled: false
+    note: Parallel web search. No key needed; PARALLEL_API_KEY raises the limits.
+    url: https://search.parallel.ai/mcp
+    api_key_env: PARALLEL_API_KEY
+    tools:
+      web_search:
+        arguments: {}
+      web_fetch:
+        arguments:
+          # The excerpt is a page's relevant part; the whole page is tens of
+          # thousands of tokens into an 800-character budget.
+          full_content: false
+
+  brave:
+    # Needs a Brave Search API key in BRAVE_API_KEY and Docker on the PATH.
+    # `docker pull brave/brave-search-mcp-server:v2.1.3` once, then set
+    # enabled: true. `-e BRAVE_API_KEY` with no value copies the variable from
+    # root's own environment rather than putting the key in argv.
+    enabled: false
+    note: Brave Search. Needs BRAVE_API_KEY and Docker.
+    command: docker
+    args:
+      - run
+      - -i
+      - --rm
+      - --cap-drop
+      - all
+      - -e
+      - BRAVE_API_KEY
+      - brave/brave-search-mcp-server:v2.1.3
+      - --transport
+      - stdio
+      # The whitelist is enforced at the server, so the model never sees the
+      # tools root would have skipped anyway.
+      - --enabled-tools
+      - brave_web_search
+      - brave_news_search
+    env:
+      - BRAVE_API_KEY
+    tools:
+      brave_web_search:
+        arguments:
+          count: 5
+          # The default wraps every match in <strong> tags, which cost the
+          # model context and tell it nothing.
+          text_decorations: false
+      brave_news_search:
+        arguments:
+          count: 5

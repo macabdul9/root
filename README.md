@@ -780,6 +780,47 @@ four hundred. A model
 that emits a bare `read_file('x')` line instead is also parsed; a model with a different
 marker needs `TOOL_CALL_START`/`TOOL_CALL_END` in `agent.py` changed to match.
 
+## Web search
+
+An agent that can only read the workspace cannot answer anything about the world
+since its weights were frozen. `configs/mcp.yaml` lists MCP servers root may call
+tools from; the packaged default is Parallel's hosted Search MCP, which needs no
+key, no Docker and no local process.
+
+```bash
+root --mcp                       # servers, their tools, and the ones root skipped
+root --agent web "When was Apptainer renamed from Singularity?"
+```
+
+Servers ship disabled. Enabling one costs a `tools/list` round trip on every
+startup, which a session that only wants the calculator should not pay, so turn it
+on deliberately:
+
+```bash
+root --init                      # writes configs/ to edit
+# set enabled: true under the parallel server in configs/mcp.yaml
+```
+
+Set `PARALLEL_API_KEY` in the shell for higher rate limits and it is sent as a
+bearer token. The key is named in the config, never written there.
+
+Two transports are supported. A server with a `command` is spawned and spoken to
+over its stdin and stdout; one with a `url` is reached over HTTP. Everything above
+the transport - the handshake, version fallback, paging and timeouts - is shared,
+so a remote server gets the same treatment as a local one.
+
+Root's tools take one or two string arguments, which is what a sub-billion-parameter
+model fills reliably. An MCP tool that requires a list of strings is offered to the
+model as one comma-separated string and split back before the call: `search_queries`
+arrives at the server as `["solar capacity", "wind capacity"]` while the model only
+ever wrote prose. Without that, both of Parallel's tools are skipped for having an
+array where root wants a string.
+
+Search results are text from web pages, and a page that carries a model's own
+control tokens is a turn boundary once it is tokenised. Every observation is
+rewritten and fenced with a nonce before it reaches the transcript - see
+[docs/browser-mcp](docs/browser-mcp/) for the hijack that motivated it.
+
 ## Evaluating
 
 ```bash
