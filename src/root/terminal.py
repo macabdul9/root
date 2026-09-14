@@ -20,7 +20,7 @@ from .config import (
 )
 from .engines import ENGINES, TRANSFORMERS, EngineUnavailable, load_engine
 from .progress import working
-from .route import AUTO, RULES, choose_agent
+from .route import AUTO, RULES, choose_agent, fallback_agent
 from .tools import Tool, build_tools
 from .trace import (
     LEVELS,
@@ -101,7 +101,7 @@ class Session:
     def resolve(self, prompt: str) -> tuple[AgentSpec, str | None]:
         if self.agent != AUTO:
             return self.agents[self.agent], None
-        route = choose_agent(prompt, set(self.agents))
+        route = choose_agent(prompt, set(self.agents), fallback_agent(self.agents, self.tools))
         return self.agents[route.agent], route.rule
 
     def remember(self, prompt: str, answer: str) -> None:
@@ -414,7 +414,9 @@ def start_terminal(session: Session) -> int:
             elif session.agent != AUTO:
                 # Pinning is easy to forget: `write python code for X` runs it
                 # rather than writing it if the session is still on python.
-                elsewhere = choose_agent(line, set(session.agents))
+                elsewhere = choose_agent(
+                    line, set(session.agents), fallback_agent(session.agents, session.tools)
+                )
                 if elsewhere.matched and elsewhere.agent != session.agent:
                     print(PINNED_HINT.format(agent=session.agent, other=elsewhere.agent))
 

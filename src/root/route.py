@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 
 DEFAULT_AGENT = "chat"
+# The agent that can look something up, when a search server is configured.
+SEARCH_AGENT = "web"
 AUTO = "auto"
 
 # Prompts that are about the assistant rather than a task. A small model told to
@@ -64,6 +66,8 @@ RULES: tuple[tuple[str, str, str], ...] = (
         r"|\bnews (on|about|for|from)\b"
         r"|\b(latest|recent|current|today'?s)\b.{0,25}"
         r"\b(news|headlines|release|version|price|weather|score)\b"
+        r"|\bwho (won|wins|is the (current|new|reigning))\b"
+        r"|\b(winner|champion|world cup|election|scores?|standings)\b"
         r"|^(?!.*\.[a-z]{1,4}\b).*\blook up\b",
         "web",
     ),
@@ -177,6 +181,26 @@ class Route:
     @property
     def matched(self) -> bool:
         return self.rule is not None
+
+
+def fallback_agent(agents, tools, default: str = DEFAULT_AGENT) -> str:
+    """The agent for a prompt no rule matched.
+
+    `chat` has no tools, so falling back to it answers from the weights - which
+    for a prompt nothing could classify is exactly when that is least safe. It
+    is how `who won fifa world cup 2026` came back as Argentina, stated plainly
+    and wrong.
+
+    When a search tool is actually loaded, the searching agent is the better
+    default. A needless search on `explain recursion` costs a second; a
+    confident price for a stock nobody looked up costs more than that. Which
+    tools count is read from the searching agent's own configuration, so adding
+    a server does not mean editing this.
+    """
+    searcher = agents.get(SEARCH_AGENT)
+    if searcher and any(tool in tools for tool in searcher.tools):
+        return SEARCH_AGENT
+    return default
 
 
 def choose_agent(prompt: str, available: set[str], default: str = DEFAULT_AGENT) -> Route:

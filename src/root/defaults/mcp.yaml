@@ -24,10 +24,11 @@ servers:
     # installed and no key is needed; set PARALLEL_API_KEY in the shell for
     # higher rate limits and it is sent as a bearer token.
     #
-    # Off by default like every server here. Enabling one costs a tools/list
-    # round trip on every startup, which a session that only wants the
-    # calculator should not pay.
-    enabled: false
+    # On by default: it needs no key, no Docker and no local process, and the
+    # cost is one tools/list round trip at startup. Off, an unmatched prompt
+    # falls to an agent with no tools and is answered from the weights, which
+    # is how a stock price nobody looked up gets stated as fact.
+    enabled: true
     note: Parallel web search. No key needed; PARALLEL_API_KEY raises the limits.
     url: https://search.parallel.ai/mcp
     api_key_env: PARALLEL_API_KEY

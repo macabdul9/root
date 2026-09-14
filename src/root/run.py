@@ -22,7 +22,7 @@ from .engines import AUTO as AUTO_ENGINE
 from .engines import ENGINES, EngineUnavailable, load_engine
 from .mcp import MCPTools, declared_tools, describe, load_servers
 from .progress import working
-from .route import AUTO, Route, choose_agent
+from .route import AUTO, Route, choose_agent, fallback_agent
 from .terminal import Session, start_terminal
 from .tools import build_tools
 from .trace import LEVELS, StreamGate, render_route, render_step, render_summary
@@ -214,7 +214,11 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             mcp.close()
 
-    route = choose_agent(prompt, set(agents)) if args.agent == AUTO else Route(args.agent, None)
+    route = (
+        choose_agent(prompt, set(agents), fallback_agent(agents, tools))
+        if args.agent == AUTO
+        else Route(args.agent, None)
+    )
     spec = agents[route.agent]
     overrides = {
         name: value

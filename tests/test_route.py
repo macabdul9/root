@@ -1,21 +1,16 @@
 import pytest
 
-from root.route import AUTO, choose_agent, is_conversational, is_identity_question
+from root.config import AgentSpec, config_path, load_agents
+from root.mcp import load_servers
+from root.route import (
+    AUTO,
+    choose_agent,
+    fallback_agent,
+    is_conversational,
+    is_identity_question,
+)
 
-AGENTS = {
-    "chat",
-    "calc",
-    "python",
-    "files",
-    "search",
-    "extract",
-    "code",
-    "write",
-    "now",
-    "pdf",
-    "repo",
-    "shell",
-}
+AGENTS = set(load_agents(config_path("agents.yaml")))
 
 # Prompts the rules were written against.
 TUNED = [
@@ -253,3 +248,71 @@ def test_identity_questions_are_recognised(prompt):
 @pytest.mark.parametrize("prompt", NOT_IDENTITY)
 def test_other_questions_are_not_identity(prompt):
     assert not is_identity_question(prompt)
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "who won fifa world cup 2026",
+        "who is the current president of france",
+        "what was the score of the game last night",
+        "who is the reigning champion in f1",
+    ],
+)
+def test_a_question_about_a_result_goes_to_the_web(prompt):
+    """These used to fall through to chat, which has no tools and answered from
+    weights that cannot contain the answer. A wrong answer delivered
+    confidently is a worse failure than no answer."""
+    assert choose_agent(prompt, AGENTS).agent == "web"
+
+
+@pytest.mark.parametrize(
+    "prompt,expected",
+    [
+        ("what is 17 times 23", "calc"),
+        ("write a function that reverses a string", "code"),
+        ("what files are in this directory", "files"),
+        ("why is a 350M model faster than a 7B one", "chat"),
+    ],
+)
+def test_widening_the_web_rule_did_not_capture_everything_else(prompt, expected):
+    assert choose_agent(prompt, AGENTS).agent == expected
+
+
+def a_spec(name, tools=()):
+    return AgentSpec(name=name, system_prompt="x", tools=tuple(tools))
+
+
+AGENTS_WITH_WEB = {
+    "chat": a_spec("chat"),
+    "web": a_spec("web", ("parallel_web_search", "parallel_web_fetch")),
+}
+
+
+def test_an_unmatched_prompt_goes_to_search_when_a_search_tool_is_loaded():
+    """`chat` has no tools, so falling back to it answers from the weights. That
+    is how `who won fifa world cup 2026` came back as Argentina."""
+    assert fallback_agent(AGENTS_WITH_WEB, {"parallel_web_search"}) == "web"
+
+
+def test_an_unmatched_prompt_stays_with_chat_when_no_search_tool_is_loaded():
+    """Routing to an agent whose tools are absent would make every unmatched
+    prompt fail instead of being answered badly, which is not an improvement."""
+    assert fallback_agent(AGENTS_WITH_WEB, {"calculator"}) == "chat"
+
+
+def test_the_fallback_reads_the_search_agent_is_own_tool_list():
+    """Adding a server should not mean editing the router."""
+    agents = {"chat": a_spec("chat"), "web": a_spec("web", ("some_new_server_search",))}
+    assert fallback_agent(agents, {"some_new_server_search"}) == "web"
+
+
+def test_a_configuration_with_no_search_agent_at_all_still_routes():
+    assert fallback_agent({"chat": a_spec("chat")}, {"calculator"}) == "chat"
+
+
+def test_the_packaged_search_server_is_enabled_so_the_fallback_can_work():
+    """The two defaults are one decision: a disabled server means the fallback
+    silently reverts to answering from the weights."""
+    servers = load_servers()
+    assert servers["parallel"].enabled
