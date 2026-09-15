@@ -25,8 +25,9 @@ from .mcp import MCPTools, declared_tools, describe, load_servers
 from .progress import working
 from .route import AUTO, Route, choose_agent, fallback_agent
 from .terminal import Session, start_terminal
+from .tiers import OFF, TIERS, Rungs, read_ladder
 from .tools import build_tools
-from .trace import LEVELS, StreamGate, render_route, render_step, render_summary
+from .trace import LEVELS, StreamGate, render_route, render_step, render_summary, render_tier
 
 DECODING_FLAGS = frozenset(
     {
@@ -68,6 +69,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="what generates the tokens; auto picks the fastest one already serving",
     )
     parser.add_argument("--engine-url", help="base URL of the vllm, sglang or ollama server")
+    parser.add_argument(
+        "--tier",
+        default=OFF,
+        choices=[OFF, AUTO, *TIERS],
+        help="which rung of the model ladder answers; auto routes by how much "
+        "effort the prompt looks like it needs",
+    )
     parser.add_argument(
         "--no-grammar",
         action="store_true",
@@ -233,6 +241,10 @@ def main(argv: list[str] | None = None) -> int:
         prompt = sys.stdin.read().strip()
 
     models = load_models()
+    ladder = read_ladder()
+    if args.tier == AUTO and not ladder.usable:
+        print("--tier auto needs a `router:` and two tiers in models.yaml", file=sys.stderr)
+        return 1
     choice = resolve_model(args.model, models)
     try:
         with working(f"Loading {choice.id}"):
@@ -268,6 +280,8 @@ def main(argv: list[str] | None = None) -> int:
             device=args.device,
             engine=args.engine,
             trace=args.trace,
+            ladder=ladder,
+            tier=args.tier,
         )
         try:
             return start_terminal(session)
@@ -292,6 +306,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.agent == AUTO and args.trace != "off":
         print(render_route(spec.name, route.rule), file=sys.stderr)
 
+    if args.tier != OFF:
+        rungs = Rungs(
+            ladder, models, device=args.device, engine=args.engine, url=args.engine_url or ""
+        )
+        rungs.adopt(model)
+        try:
+            if args.tier == AUTO:
+                model, tier, effort = rungs.pick(prompt)
+            else:
+                model, tier, effort = rungs.open(args.tier), args.tier, None
+        except KeyError as exc:
+            print(exc.args[0], file=sys.stderr)
+            return 1
+        if args.trace != "off":
+            print(render_tier(tier, model.model_id, effort), file=sys.stderr)
+
     def show(step):
         for line in render_step(step, args.trace):
             print(line, file=sys.stderr)
@@ -307,15 +337,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.until:
         return _pursue(args, spec, model, tools, prompt, show)
 
-    result = run_agent(
-        model,
-        spec,
-        prompt,
-        tools,
-        on_step=show,
-        on_token=gate.feed if gate else None,
-        agents=agents,
-    )
+    try:
+        result = run_agent(
+            model,
+            spec,
+            prompt,
+            tools,
+            on_step=show,
+            on_token=gate.feed if gate else None,
+            agents=agents,
+        )
+    except EngineUnavailable as exc:
+        # A served rung only reaches its server when it generates: the tokenizer
+        # comes from the hub, so loading it says nothing about the server.
+        print(exc, file=sys.stderr)
+        return 1
     if gate:
         gate.close()
     if gate and gate.emitted:

@@ -21,6 +21,7 @@ from .config import (
 from .engines import ENGINES, TRANSFORMERS, EngineUnavailable, load_engine
 from .progress import working
 from .route import AUTO, RULES, choose_agent, fallback_agent
+from .tiers import OFF, TIERS, Ladder, Rungs
 from .tools import Tool, build_tools
 from .trace import (
     LEVELS,
@@ -29,6 +30,7 @@ from .trace import (
     render_route,
     render_step,
     render_summary,
+    render_tier,
     render_turn,
     use_color,
 )
@@ -54,6 +56,7 @@ HELP = """\
 /model remove NAME forget a registered model
 /inference [NAME]  show or switch the engine: auto, transformers, vllm, sglang, ollama
                    (/engine does the same)
+/tier [NAME]       show the model ladder, or use one rung: off, auto, or a tier
 /tools             show the tools the current agent may call
 /routes            show the rules auto uses to pick an agent
 /trace [LEVEL]     show or set the trace level: off, on, full
@@ -92,6 +95,9 @@ class Session:
     last: AgentResult | None = None
     last_spec: AgentSpec | None = None
     streamed: bool = False
+    ladder: Ladder = field(default_factory=Ladder)
+    tier: str = OFF
+    rungs: Rungs | None = None
 
     @property
     def spec(self) -> AgentSpec:
@@ -120,13 +126,20 @@ class Session:
 # A command and its plural differ by one letter and mean different things, so
 # `/agents python` used to list the agents and quietly drop the argument. Both
 # spellings now work either way: with a name they switch, without one they list.
-SYNONYMS = {"agents": "agent", "models": "model", "tool": "tools", "route": "routes"}
+SYNONYMS = {
+    "agents": "agent",
+    "models": "model",
+    "tool": "tools",
+    "route": "routes",
+    "tiers": "tier",
+}
 
 
 def run_command(session: Session, line: str) -> str:
     name, _, argument = line[1:].partition(" ")
     argument = argument.strip()
-    name = SYNONYMS.get(name, name) if argument or name in {"models", "tool", "route"} else name
+    plural = {"models", "tool", "route", "tiers"}
+    name = SYNONYMS.get(name, name) if argument or name in plural else name
 
     if name in {"quit", "exit", "q"}:
         session.running = False
@@ -161,6 +174,8 @@ def run_command(session: Session, line: str) -> str:
         return switch_engine(session, argument)
     if name == "model":
         return switch_model(session, argument)
+    if name == "tier":
+        return switch_tier(session, argument)
     if name == "routes":
         return "\n".join(f"{agent:8s} {rule}" for rule, _, agent in RULES)
     if name == "tools":
@@ -294,11 +309,85 @@ def switch_model(session: Session, argument: str) -> str:
             return str(exc)
 
     note = " (running custom code from its repository)" if choice.trust_remote_code else ""
-    session.model.unload()
+    _drop_session_model(session)
     with working(f"Loading {choice.id}{note}", stream=sys.stdout):
         session.model = load_model(choice, session.device, session.engine)
+    _keep_session_model(session)
     session.history.clear()
     return f"model: {choice.id} · tool calls: {session.model.call_format.name}"
+
+
+def switch_tier(session: Session, argument: str) -> str:
+    """Show the ladder, or fix the session to one rung of it.
+
+    Switching does not load anything: a rung comes up the first time a prompt
+    lands on it, so naming a tier served by an engine that is not running fails
+    on that prompt rather than here.
+    """
+    ladder = session.ladder
+    if not argument:
+        rows = [f"{'*' if session.tier == OFF else ' '} {OFF:7s} stay on the loaded model"]
+        routed = ", ".join(ladder.routed)
+        why = f"route by effort between {routed}" if ladder.usable else "unavailable, see below"
+        rows.append(f"{'*' if session.tier == AUTO else ' '} {AUTO:7s} {why}")
+        for tier in TIERS:
+            rung = ladder.rungs.get(tier)
+            if not rung:
+                continue
+            where = f" on {rung.engine}" if rung.engine else ""
+            never = "" if tier in ladder.routed else ", never routed to"
+            rows.append(
+                f"{'*' if session.tier == tier else ' '} {tier:7s} {rung.model}{where}{never}"
+            )
+        if not ladder.usable:
+            rows.append("")
+            rows.append(_why_unusable(ladder))
+        return "\n".join(rows)
+
+    if argument == OFF:
+        session.tier = OFF
+        return f"tier: {OFF}, answering on {getattr(session.model, 'model_id', '?')}"
+    if argument == AUTO:
+        if not ladder.usable:
+            return _why_unusable(ladder)
+        session.tier = AUTO
+        return f"tier: {AUTO} over {', '.join(ladder.routed)}"
+    if argument not in ladder.rungs:
+        return f"no {argument!r} tier configured; have {[OFF, AUTO, *ladder.rungs]}"
+    session.tier = argument
+    return f"tier: {argument} ({ladder.rungs[argument].model})"
+
+
+def _why_unusable(ladder: Ladder) -> str:
+    if not ladder.router:
+        return "routing needs a `router:` model in models.yaml"
+    return f"routing needs two or more of {list(TIERS[:3])} in models.yaml"
+
+
+def _drop_session_model(session: Session) -> None:
+    """Free the loaded weights, taking any rung that borrowed them with it."""
+    if session.rungs is not None:
+        session.rungs.release(session.model)
+    session.model.unload()
+
+
+def _keep_session_model(session: Session) -> None:
+    if session.rungs is not None:
+        session.rungs.adopt(session.model)
+
+
+def tier_model(session: Session, prompt: str) -> tuple[object, str | None, float | None]:
+    """The model this prompt should run on, and which rung it came from."""
+    if session.tier == OFF or not session.ladder.rungs:
+        return session.model, None, None
+    if session.rungs is None:
+        session.rungs = Rungs(
+            session.ladder, session.models, device=session.device, engine=session.engine
+        )
+        session.rungs.adopt(session.model)
+    if session.tier != AUTO:
+        return session.rungs.open(session.tier), session.tier, None
+    return session.rungs.pick(prompt)
 
 
 def switch_engine(session: Session, argument: str) -> str:
@@ -323,19 +412,25 @@ def switch_engine(session: Session, argument: str) -> str:
     except EngineUnavailable as exc:
         session.engine = previous
         return f"{exc}"
-    session.model.unload()
+    _drop_session_model(session)
     session.model = replacement
+    if session.rungs is not None:
+        session.rungs.engine = argument
+    _keep_session_model(session)
     session.history.clear()
     return f"inference: {argument} · {session.model.device}"
 
 
 def answer(session: Session, prompt: str) -> AgentResult:
-    model = session.model
     color = use_color()
     spec, rule = session.resolve(prompt)
+    model, tier, effort = tier_model(session, prompt)
 
-    if session.agent == AUTO and session.trace != "off":
-        print(render_route(spec.name, rule, color))
+    if session.trace != "off":
+        if session.agent == AUTO:
+            print(render_route(spec.name, rule, color))
+        if tier:
+            print(render_tier(tier, model.model_id, effort, color))
 
     def show(step: Step) -> None:
         for line in render_step(step, session.trace, color):
@@ -402,6 +497,11 @@ def start_terminal(session: Session) -> int:
             result = answer(session, line)
         except KeyboardInterrupt:
             print("\ninterrupted")
+            continue
+        except (EngineUnavailable, KeyError) as exc:
+            # A tier served elsewhere only reaches its server when it generates.
+            # That is a reason to say so, not to end the session.
+            print(exc if isinstance(exc, EngineUnavailable) else exc.args[0])
             continue
         spec = session.last_spec or session.spec
         # A streamed answer is already on screen; printing it again would double it.

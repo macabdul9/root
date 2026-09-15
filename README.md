@@ -122,6 +122,7 @@ but the model then narrates the tool result wrongly, calling 296 the answer to `
 | `/routes` | Show the rules `auto` uses to pick an agent |
 | `/agent`, `/model`, `/trace` | With no argument, list the options and how to set them |
 | `/model [NAME]` | List models, or load one by alias or Hugging Face id |
+| `/tier [NAME]`, `/tiers` | Show the model ladder, or use one rung: `off`, `auto`, or a tier name |
 | `/inference [NAME]`, `/engine` | Show or switch the engine: `auto`, `transformers`, `vllm`, `sglang`, `ollama` |
 | `/trace [LEVEL]` | Show or set the trace level: `off`, `on`, `full` |
 | `/stream [on\|off]` | Stream the answer as it is generated |
@@ -149,7 +150,8 @@ root> /model
   lfm2-230m                230M, the smallest
   qwen3-06b                600M, JSON tool calls
   qwen35-08b               800M, XML tool calls
-  k2-horizon-09b           900M, runs code from its own repo
+  k2-horizon-09b           1.08B despite its name, runs code from its own repo
+  qwen3.8-27b              27.8B, XML tool calls, served engine only
   qwen3-coder-30b-a3b      30.5B MoE, tuned for code, XML tool calls, served engine only
   glm-4.7-flash            31.2B MoE, GLM tool calls, served engine only
 root> /model qwen3-06b
@@ -175,6 +177,75 @@ alias is optional; without one, `LiquidAI/LFM2.5-350M` becomes `lfm2.5-350m`.
 A model whose chat template has no tool-call markers loads under the `generic` format, which
 means the toolless agents work and a forced tool call is not available. `/model` shows the
 format each model resolved to when you load it.
+
+## Model tiers
+
+One model answering everything is either too small for the hard prompts or too expensive for
+the easy ones. `models.yaml` can name a ladder instead, and a router model picks a rung per
+prompt:
+
+```yaml
+router: qwen35-08b
+
+tiers:
+  small: lfm2-350m
+  medium: qwen35-08b
+  large:
+    model: qwen3.8-27b
+    engine: vllm
+```
+
+Routing is off until asked for, with `root --tier auto` or `/tier auto`; `--tier large` pins
+one rung instead. A rung is loaded the first time a prompt lands on it and kept after that,
+and the router shares weights with whichever rung is the same model rather than loading a
+second copy of it.
+
+```
+$ root --tier auto "what is 17 times 23"
+  ● route → calc (arithmetic)
+  ● tier → small (LFM2.5-350M, effort 0.87)
+$ root --tier auto "design a rate limiter that survives a process restart"
+  ● tier → large (Qwen3.8-27B, effort 1.87)
+```
+
+The router reads the prompt, answers one multiple-choice question about how much effort it
+needs, and is scored from the logits of that single token - no generation, no parsing. The
+score is the expected value over the four letters rather than the argmax, so a prompt split
+between two letters lands between them.
+
+Three tiers are routed, not four, because that is what the router can actually separate.
+Over 17 labelled prompts, `Qwen/Qwen3.5-0.8B` scored:
+
+| Label | Range | Gap to the next |
+| --- | --- | --- |
+| trivial | 0.70 - 0.96 | |
+| ordinary | 1.06 - 1.32 | +0.10 |
+| hard | 1.48 - 1.82 | +0.16 |
+| research | 1.76 - 1.89 | **-0.06**, overlapping |
+
+So the `xlarge` rung is configurable and selectable by name, but never predicted: hard and
+research are not distinguishable at this size, and reaching for a model that large is a
+decision about cost that a 0.8B reading one sentence has not earned. `LiquidAI/LFM2.5-350M`
+was measured as a router too and separates nothing - every gap negative, trivial scoring
+*higher* than research - so the router has to be the ~1B class, not the smallest model
+available.
+
+On a wider set of 26 prompts, 22 land on the right rung, which is the most any pair of
+thresholds achieves:
+
+| Label | n | Range |
+| --- | --- | --- |
+| trivial | 12 | 0.72 - 1.24 |
+| ordinary | 8 | 1.05 - 1.29 |
+| hard | 6 | 1.55 - 1.87 |
+
+The hard boundary is clean; the cheap one overlaps. Every one of the four misses is a
+trivial prompt sent to `medium` - nothing was ever routed *below* its label, so a miss costs
+some speed rather than an answer the model was too small to give.
+
+The `medium` rung is meant for the 1-7B band. Nothing in that band is configured here, so it
+currently holds the largest model that runs in-process; point it at a real 4-7B model behind
+`engine: vllm` when one is being served.
 
 ## Eval findings
 

@@ -8,6 +8,7 @@ __pycache__/
 dist/
 build/
 
+notes.txt
 # Tool caches. pytest and ruff each write their own .gitignore, so these are
 # already ignored in practice; listing them means that does not depend on it.
 .pytest_cache/

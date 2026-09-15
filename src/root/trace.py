@@ -65,6 +65,11 @@ def render_route(agent: str, rule: str | None, color: bool = False) -> str:
     return _dim(f"  ● route → {agent} ({why})", color)
 
 
+def render_tier(tier: str, model_id: str, score: float | None, color: bool = False) -> str:
+    effort = "" if score is None else f", effort {score:.2f}"
+    return _dim(f"  ● tier → {tier} ({model_id.split('/')[-1]}{effort})", color)
+
+
 class StreamGate:
     """Forward streamed text, without leaking a tool call to the screen.
 

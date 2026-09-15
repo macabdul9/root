@@ -13,6 +13,26 @@
 # run against the eval set.
 default: lfm2-350m
 
+# The tier ladder, used when routing is on (`root --tier auto`, or /tier auto in
+# the terminal). The router reads the prompt and picks among small, medium and
+# large; xlarge is only ever reached by asking for it by name.
+#
+# medium is meant for the 1-7B band and currently holds the largest model that
+# runs in this process, because nothing in that band is configured here. Point
+# it at a real 4-7B model behind `engine: vllm` when one is being served.
+#
+# The router has to be a local model - it is scored from logits, not from text -
+# and has to be around 1B: LFM2.5-350M was measured and cannot separate the
+# tiers at all.
+router: qwen35-08b
+
+tiers:
+  small: lfm2-350m
+  medium: qwen35-08b
+  large:
+    model: qwen3.8-27b
+    engine: vllm
+
 models:
   lfm2-350m:
     id: LiquidAI/LFM2.5-350M

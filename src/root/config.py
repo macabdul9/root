@@ -175,9 +175,14 @@ def _read_models_config(path: Path) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
+def models_document(path: Path | None = None) -> dict:
+    """The parsed models.yaml, for the keys beside `models:`."""
+    return _read_models_config(config_path("models.yaml", path))
+
+
 def load_models(path: Path | None = None) -> dict[str, ModelChoice]:
     """Read the offered models, keyed by short alias."""
-    document = _read_models_config(config_path("models.yaml", path))
+    document = models_document(path)
     return {
         alias: ModelChoice(
             alias=alias,
@@ -205,8 +210,7 @@ def load_default_model(path: Path | None = None) -> str:
     starts is an edit there rather than in two files that can disagree.
     """
     resolved = config_path("models.yaml", path)
-    document = _read_models_config(resolved)
-    chosen = load_models(resolved).get(document.get("default", ""))
+    chosen = load_models(resolved).get(models_document(resolved).get("default", ""))
     return chosen.id if chosen else FALLBACK_MODEL
 
 
